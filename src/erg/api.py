@@ -1,7 +1,7 @@
 import secrets
 from dataclasses import asdict
 
-from fastapi import Cookie, FastAPI, HTTPException
+from fastapi import Cookie, FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
@@ -9,9 +9,10 @@ from erg.c2 import oauth
 from erg.c2.client import C2Client
 from erg.config import get_settings
 from erg.db import session_scope
-from erg.models import Athlete
+from erg.models import Athlete, IntervalSplit, Stroke, Workout
 from erg.services import client_for_athlete
-from erg.sync import backfill, upsert_athlete
+from erg.strokes import downsample, with_elapsed
+from erg.sync import backfill, fetch_strokes, upsert_athlete
 from erg.tokens import store_token
 
 app = FastAPI(title="Erg Analytics")
@@ -81,3 +82,60 @@ def run_backfill(athlete_id: int):
     finally:
         client.close()
     return asdict(stats)
+
+
+@app.post("/athletes/{athlete_id}/strokes/fetch")
+def run_stroke_fetch(athlete_id: int, limit: int | None = None):
+    settings = get_settings()
+    client = client_for_athlete(settings, athlete_id)
+    try:
+        with session_scope() as s:
+            stats = fetch_strokes(s, client, athlete_id, limit=limit)
+    finally:
+        client.close()
+    return asdict(stats)
+
+
+@app.get("/workouts/{workout_id}/strokes")
+def get_strokes(
+    workout_id: int,
+    downsample_to: int | None = Query(None, alias="downsample", ge=3, description="max points (LTTB on time vs pace)"),
+    include_rest: bool = True,
+):
+    with session_scope() as s:
+        workout = s.get(Workout, workout_id)
+        if workout is None:
+            raise HTTPException(404, "workout not found")
+        strokes = s.execute(select(Stroke).where(Stroke.workout_id == workout_id).order_by(Stroke.seq)).scalars().all()
+        intervals = s.execute(
+            select(IntervalSplit).where(IntervalSplit.workout_id == workout_id).order_by(IntervalSplit.idx)
+        ).scalars().all()
+
+        points = with_elapsed(strokes)
+        if not include_rest:
+            points = [p for p in points if not p["is_rest"]]
+        total = len(points)
+        if downsample_to:
+            points = downsample(points, downsample_to)
+
+        return {
+            "workout_id": workout_id,
+            "workout_type": workout.workout_type,
+            "stroke_status": workout.stroke_status,
+            "stroke_warning": workout.stroke_warning,
+            "intervals": [
+                {
+                    "idx": i.idx,
+                    "kind": i.kind,
+                    "target_type": i.target_type,
+                    "time_s": float(i.time_s),
+                    "distance_m": i.distance_m,
+                    "rest_time_s": float(i.rest_time_s),
+                    "hr_avg": i.hr_avg,
+                    "hr_rest": i.hr_rest,
+                }
+                for i in intervals
+            ],
+            "total_points": total,
+            "points": points,
+        }

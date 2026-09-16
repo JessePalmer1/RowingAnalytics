@@ -70,6 +70,6 @@ def engine():
 @pytest.fixture
 def db(engine):
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE athlete, oauth_token, workout CASCADE"))
+        conn.execute(text("TRUNCATE athlete, oauth_token, workout, interval_split, stroke CASCADE"))
     with Session(engine, expire_on_commit=False) as session:
         yield session

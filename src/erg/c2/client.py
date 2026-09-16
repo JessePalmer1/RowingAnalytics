@@ -100,3 +100,6 @@ class C2Client:
             if not rows or not has_next:
                 return
             page += 1
+
+    def get_strokes(self, result_id: int, user: str | int = "me") -> list[dict[str, Any]]:
+        return self._get(f"/api/users/{user}/results/{result_id}/strokes").get("data") or []

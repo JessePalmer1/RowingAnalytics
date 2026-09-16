@@ -16,6 +16,13 @@ HR_MIN = 90
 HR_MAX = 210
 # Rest HR is sampled after recovery, so a 90 bpm floor would discard real values.
 HR_REST_MIN = 40
+# Per-stroke HR includes warm-up and rest recovery, so only the physiological extremes are rejected.
+STROKE_HR_MIN = 30
+STROKE_HR_MAX = 230
+
+# ~90 for light rowing, ~220 at max drag for power tests.
+DRAG_MIN = 90
+DRAG_MAX = 225
 
 WATTS_CONSTANT = Decimal("2.80")
 
@@ -37,6 +44,12 @@ def validate_hr(bpm: int | None, lo: int = HR_MIN, hi: int = HR_MAX) -> int | No
     if not bpm or bpm < lo or bpm > hi:
         return None
     return bpm
+
+
+def validate_drag(drag: int | None) -> int | None:
+    if drag is None or drag < DRAG_MIN or drag > DRAG_MAX:
+        return None
+    return drag
 
 
 def hr_quality(raw_avg: int | None) -> str:
@@ -132,7 +145,7 @@ def normalize_workout(payload: dict[str, Any], athlete_id: int, default_tz: str)
         "rest_distance_m": rest_distance_m,
         "avg_spm": payload.get("stroke_rate"),
         "stroke_count": payload.get("stroke_count"),
-        "drag_factor": payload.get("drag_factor"),
+        "drag_factor": validate_drag(payload.get("drag_factor")),
         "avg_pace_s_500": _q(pace, "0.01"),
         "avg_watts": _q(watts, "0.1"),
         "watts_derived": watts is not None,
@@ -145,3 +158,37 @@ def normalize_workout(payload: dict[str, Any], athlete_id: int, default_tz: str)
         "has_strokes": bool(payload.get("stroke_data")),
         "raw": payload,
     }
+
+
+def normalize_interval_splits(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rows for interval_split from raw.workout.intervals (interval workouts) or .splits."""
+    workout = payload.get("workout") or {}
+    if workout.get("intervals"):
+        kind, entries = "interval", workout["intervals"]
+    elif workout.get("splits"):
+        kind, entries = "split", workout["splits"]
+    else:
+        return []
+
+    rows = []
+    for idx, e in enumerate(entries):
+        hr = e.get("heart_rate") or {}
+        rows.append(
+            {
+                "workout_id": payload["id"],
+                "idx": idx,
+                "kind": kind,
+                "target_type": e.get("type"),
+                "time_s": tenths_to_seconds(e.get("time")),
+                "distance_m": int(e.get("distance") or 0),
+                "rest_time_s": tenths_to_seconds(e.get("rest_time")),
+                "rest_distance_m": int(e.get("rest_distance") or 0),
+                "spm": e.get("stroke_rate") or None,
+                "hr_avg": validate_hr(hr.get("average")),
+                "hr_max": validate_hr(hr.get("max")),
+                "hr_ending": validate_hr(hr.get("ending")),
+                "hr_rest": validate_hr(hr.get("rest"), lo=HR_REST_MIN),
+                "calories": e.get("calories_total"),
+            }
+        )
+    return rows

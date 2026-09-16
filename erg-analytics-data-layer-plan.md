@@ -13,7 +13,8 @@ Base: `https://log.concept2.com`
 ### 1.1 Auth
 - OAuth2. Grant types available to all apps: **Authorization Code** + **Refresh**.
 - Register at the Concept2 API key portal → get Client ID + Client Secret. Register your redirect URI.
-- **Develop against the development server first**, then contact Concept2 for live API approval. Dev database is periodically reset — never rely on data persisting there.
+- **Read-only apps may use the live API (`log.concept2.com`) directly — no approval needed.** Only apps that *write* results must first develop against the dev server (`log-dev.concept2.com`, separate accounts, periodically reset) and then email ranking@concept2.com for live approval. This project is read-only and is connected to the live API.
+- App registration (API key portal, `/developers/keys`): platform **Browser**, redirect URI `http://localhost:8000/auth/callback`, webhook URL left blank until Phase 5.
 - Scopes, comma-separated: `user:read,results:read` (add `results:write` only if/when you POST workouts).
   - Requesting `results:write` implies `results:read`.
   - **Do not omit the scope param** — it silently defaults to `user:read,results:write` for backwards compatibility.
@@ -40,10 +41,15 @@ Register in the self-service developer portal. Fires on `result-added`, `result-
 
 **Note:** the webhook payload does **not** include stroke data. On receipt, enqueue a job to fetch strokes separately.
 
+The webhook URL must be **publicly reachable** — Concept2 cannot call `localhost`. Requires a deployment or a tunnel before Phase 5.
+
 ### 1.4 Data model quirks (all of these will bite)
 - **`date` is the END of the workout, not the start**, as stored in the monitor. It is in the user's local time; a separate `timezone` field (tz database format) and `date_utc` may be present. Historic rows may have `timezone: null`. Normalize carefully and store both local and UTC.
-- **Units:** `time` is tenths of a second. `distance` is meters. Stroke `t` is tenths of a second, `d` is **decimeters**, `p` is pace in tenths of a second per 500m. User `weight` is **decigrams** (7500 = 75kg).
+- **Units:** `time` is tenths of a second. `distance` is meters. Stroke `t` is tenths of a second, `d` is **decimeters**, `p` is pace in tenths of a second per 500m. User `weight` is **decagrams**, not decigrams as the docs say (7500 = 75kg; verified: live profile 8754 = 87.5kg).
+- **No average watts in the results payload.** Only `wattminutes_total`, on a handful of rows. Watts are always derived from work pace.
 - **Interval workouts:** top-level `distance`/`time` are **work only**; `rest_distance`/`rest_time` are separate. Stroke `t`/`d` **reset to 0 at each interval**, and are cumulative-within-interval, not deltas.
+- **Per-interval summaries** live in `raw.workout.intervals` (interval workouts) or `raw.workout.splits` (split workouts): per-row `type` (`time`|`distance`), `time`, `distance`, `rest_time`, `rest_distance`, `stroke_rate`, `calories_total`, and `heart_rate` {average, min, max, ending, rest}. `heart_rate` is `{}` when no strap.
+- Top-level `rest_time` includes rest after the **final** interval even though no strokes are recorded there, so `started_at = ended - (work + rest)` can be early by one rest period.
 - **`stroke_data` is a boolean flag** on the result. If false, skip the stroke fetch. If true and the fetch still 404s ("This workout does not have any stroke data associated with it"), handle gracefully — this has historically been inconsistent.
 - **Duplicates:** the logbook rejects a POST with the same date+time+distance with `409`.
 - `workout_type` enum includes `JustRow`, `FixedDistanceSplits`, `FixedTimeSplits`, `FixedDistanceInterval`, `FixedTimeInterval`, `VariableInterval`, `unknown`. Older rows are often `unknown` — do not trust it as your only classifier.
@@ -52,11 +58,28 @@ Register in the self-service developer portal. Fires on `result-added`, `result-
 ### 1.5 Known data-quality reality (from the existing season CSV)
 Measured on 104 sessions, Sept 2025 – Apr 2026:
 - HR field is **populated on all 104 but physiologically plausible (90–210 bpm) on only ~76** — the rest are zeros/garbage from the strap not being worn. **Always validate HR, never trust presence.**
-- Drag factor drifts (104–121 observed). Watts are drag-independent; pace comparisons across different drag are not. Store drag and expose it as a comparability filter.
+- Drag factor drifts (104–121 observed in the CSV; 94–200 in the live logbook, see §1.6). Watts are drag-independent; pace comparisons across different drag are not. Store drag and expose it as a comparability filter.
 - Only ~11 pieces are continuous, ≥15 min, with usable HR *and* watts. Steady-state analysis operates on a much smaller subset than total session count.
 - Watts present on 101/104.
 
 **Design consequence:** every derived metric must carry an explicit `eligible` flag and a `reason_ineligible`, not silently drop rows.
+
+### 1.6 Live-data findings (first backfill, 2026-09-16)
+118 rower sessions, 2025-09-03 → 2026-09-16, ~1,225 km:
+- **All from `ErgData iOS`; no `unknown` workout_type.** Types: FixedTimeInterval 47, VariableInterval 25, FixedDistanceInterval 19, FixedTimeSplits 13, FixedDistanceSplits 11, JustRow 3. The classifier can lean on `workout_type` more than §4.4 assumed (still keep overrides).
+- `date_utc` present on all rows; `timezone` null on 3.
+- Strokes flagged on 113/118. HR: 85 valid, 33 absent (zeros/no strap), 0 out-of-band.
+- **Drag factor observed 94–200.** Plausible range is **90–225**: ~90 for light rowing, ~220 at max drag for power tests. Values outside that are treated as invalid. High-drag power pieces are not pace-comparable with normal-drag work.
+
+### 1.7 Stroke data reality (from sampled live workouts)
+- **Interval stroke streams include the rest period.** Within an interval, `t` runs past the work time into rest (e.g. 1:40 on / 0:20 off → `t` reaches ~120s) and `d` includes rest distance. Label strokes work/rest using the interval's work `time` from `raw.workout.intervals`. This is also what makes HRR (§5.3) computable.
+- **Interval boundary = `t` AND `d` both decrease.** `t` alone jitters backwards by up to ~6s near the end of an interval while `d` keeps increasing; treating that as a reset creates phantom intervals. Cross-check the detected count against `len(raw.workout.intervals)`.
+- First stroke(s) have `p = 0` and `spm = 0` → null, not zero.
+- `hr = 0` on every stroke when no strap → null.
+- **Per-stroke HR legitimately falls below 90** (warm-up start 63 bpm, rest recovery). The 90–210 band is for session averages only; per-stroke HR uses a wide physiological band (30–230).
+- `d` can overshoot the interval target distance (paddling through rest).
+- Rest strokes are sparse (a few paddle strokes, ~1–2% of interval strokes overall) but carry HR through recovery (e.g. 163→155 bpm over a 20s rest).
+- **Logbook summaries can be truncated; strokes are more complete.** 5/113 workouts have more intervals in the stroke stream than in `raw.workout.intervals`, and the extra intervals are full-effort work, not artifacts. 3 of them have top-level `time = 0` and `distance = 0` (107312625, 107817599, 113079371); 2 have totals covering only the first interval (109930824, 113030068). That's ~23 km of rowing the summary under-reports. These carry a `stroke_warning`; strokes in the unsummarized intervals cannot be labelled work/rest. **Phase 4 consequence:** load aggregates and totals must reconstruct from strokes when `stroke_warning` is set or totals are zero, not trust the summary.
 
 ---
 
@@ -110,7 +133,7 @@ athlete (
   id                bigint primary key,        -- C2 user id
   username          text,
   max_heart_rate    int,                       -- from profile, nullable
-  weight_g          int,                       -- normalized from decigrams
+  weight_g          int,                       -- normalized from decagrams (x10)
   created_at        timestamptz
 )
 
@@ -128,6 +151,7 @@ workout (
   ended_at_local    timestamp,                 -- C2 `date` = END of workout
   ended_at_utc      timestamptz,
   tz                text,
+  tz_source         text,                      -- 'payload' | 'athlete_default'
   started_at_utc    timestamptz,               -- DERIVED: ended - (work+rest)
   machine           text,                      -- rower/skierg/bike/etc
   workout_type      text,
@@ -138,23 +162,33 @@ workout (
   rest_distance_m   int,
   avg_spm           int,
   stroke_count      int,
-  drag_factor       int,
-  avg_watts         numeric,                   -- derived if absent
+  drag_factor       int,                       -- null if outside 90-225
+  avg_pace_s_500    numeric,
+  avg_watts         numeric,                   -- derived from pace (not in payload)
+  watts_derived     bool,
   hr_avg            int,
   hr_ending         int,
   hr_rest           int,
+  hr_quality        text,                      -- 'valid' | 'invalid' | 'absent'
   calories          int,
   comments          text,
   has_strokes       bool,
+  stroke_status     text,                      -- 'not_available' | 'pending' | 'fetched' | 'missing' | 'error'
+  stroke_attempts   int,
+  stroke_error      text,
+  stroke_warning    text,                      -- parse anomalies (e.g. interval count mismatch)
+  strokes_fetched_at timestamptz,
   raw               jsonb,                     -- full original payload
   ingested_at       timestamptz,
-  unique (athlete_id, ended_at_local, work_distance_m)   -- mirrors C2 dedupe
+  unique (athlete_id, ended_at_local, work_time_s, work_distance_m)   -- mirrors C2 dedupe (date+time+distance)
 )
 
 interval_split (
-  id, workout_id, idx, type,                   -- 'split' | 'interval'
+  workout_id, idx,                             -- pk
+  kind,                                        -- 'split' | 'interval'
+  target_type,                                 -- 'time' | 'distance'
   time_s, distance_m, rest_time_s, rest_distance_m,
-  spm, hr_avg, hr_ending, hr_rest, calories
+  spm, hr_avg, hr_max, hr_ending, hr_rest, calories
 )
 
 stroke (
@@ -165,11 +199,12 @@ stroke (
   d_m          numeric,                        -- from decimeters
   pace_s_500   numeric,
   spm          smallint,
-  hr           smallint,
+  hr           smallint,                       -- 30-230 valid; 0 -> null
+  is_rest      bool,                           -- stroke taken during the interval's rest period
   primary key (workout_id, interval_idx, seq)
 )
 -- consider TimescaleDB hypertable or monthly partitions if this grows large;
--- ~230 strokes per 2k, ~1000+ for a 15k. 104 sessions ≈ 50-80k rows. Fine as plain table.
+-- ~230 strokes per 2k, ~1000+ for a 15k. 118 sessions ≈ 50-100k rows. Fine as plain table.
 
 workout_metric (
   workout_id   bigint primary key,
@@ -225,7 +260,9 @@ Two mechanisms, both required — webhooks can be missed, polling is the safety 
 - Derive `started_at_utc = ended_at_utc - (work_time + rest_time)`. Flag it as derived; it's approximate for interval workouts where rest handling varies.
 - If `timezone` is null, fall back to athlete's default tz; record that you did.
 - Derive watts from pace when absent: `watts = 2.80 / pace_per_metre³`, i.e. for pace in seconds per 500m, `watts = 2.80 / (pace/500)³`.
-- **HR validation:** mark HR null if outside 90–210 or equal to 0. Track `hr_quality` per workout.
+- **HR validation:** mark session/interval average and ending HR null if outside 90–210 or equal to 0. Rest HR uses 40–210 (it is sampled after recovery). Per-stroke HR uses 30–230 (§1.7). Track `hr_quality` per workout.
+- **Drag validation:** mark `drag_factor` null if outside 90–225. The raw value stays in `raw`.
+- Keep normalization re-runnable from `raw` (`erg renormalize`) so rule changes never need an API re-fetch.
 
 ### 4.4 Session classification
 Do not trust `workout_type` alone. Classify into: `test_2k`, `benchmark_other` (5k/6k/30min), `interval`, `steady`, `warmup_short`, `unknown`.
@@ -306,9 +343,9 @@ Downsampling strokes matters: a 15k has thousands of strokes; use largest-triang
 
 ## 7. Build phases
 
-**Phase 1 — Ingest (the foundation).** OAuth flow with token refresh + rotation, backfill pager, workout normalizer, Postgres schema, idempotent upserts. *Done when:* your full season is in the database and re-running backfill changes nothing.
+**Phase 1 — Ingest (the foundation).** OAuth flow with token refresh + rotation, backfill pager, workout normalizer, Postgres schema, idempotent upserts. *Done when:* your full season is in the database and re-running backfill changes nothing. **✅ Done 2026-09-16** — 118 sessions ingested from the live API; second backfill run reported 118 unchanged.
 
-**Phase 2 — Strokes.** Stroke fetch worker, interval-aware parsing, bulk insert, `has_strokes` handling, downsampling endpoint. *Done when:* you can pull the stroke series for any 2k and plot it.
+**Phase 2 — Strokes.** Stroke fetch worker, interval-aware parsing, bulk insert, `has_strokes` handling, downsampling endpoint. *Done when:* you can pull the stroke series for any 2k and plot it. **✅ Done 2026-09-16** — 113/113 workouts fetched (106,020 strokes, 0 missing, 0 errors, 5 truncated-summary warnings, §1.7); 2k 110330485 (6:23.9) plotted from `/workouts/{id}/strokes` with and without LTTB downsampling.
 
 **Phase 3 — Classification + eligibility.** Session classifier with confidence + manual override, HR validation, eligibility flags with reasons. *Done when:* you agree with the classifier on all 104 sessions (after overrides).
 
@@ -344,11 +381,18 @@ Downsampling strokes matters: a 15k has thousands of strokes; use largest-triang
 - [ ] Dev database is **wiped periodically**; don't build anything that assumes persistence there.
 - [ ] Rate limiting isn't enforced *yet* — self-limit anyway; the docs reserve the right and note that abuse costs access.
 - [ ] Decoupling under 20 minutes is not meaningful. Enforce the floor.
-- [ ] Drag factor varies (104–121 in your data) — gate pace comparisons on it.
-- [ ] Production API access requires Concept2 approval after dev work. Start that conversation early if you want this live.
+- [ ] Drag factor varies (94–200 observed; valid 90–225, power tests near 220) — gate pace comparisons on it.
+- [x] ~~Production API access requires Concept2 approval~~ — only for apps that write. Read-only runs on live now.
+- [x] Weight is decagrams, not decigrams (verified against live profile).
+- [ ] Interval stroke streams include rest strokes — label work/rest before computing any work-portion metric.
+- [ ] Stroke `t` jitters backwards near interval ends — detect boundaries on `t` and `d` together.
 
 ---
 
 ## 10. Immediate next step
 
-Build Phase 1 against the **development server**: OAuth round-trip, `GET /api/users/me`, paginated result backfill, normalizer, and the `workout` table. That single slice de-risks auth, pagination, units, and timezone handling — the four things most likely to be quietly wrong — before any metric work starts.
+~~Build Phase 1 against the development server~~ — Phase 1 is done against the live API.
+
+~~Phase 2 — strokes~~ — done: Postgres-backed fetch queue (`stroke_status` on `workout`, `FOR UPDATE SKIP LOCKED`), `interval_split` from `raw.workout`, interval-aware parser with work/rest labelling, `GET /workouts/{id}/strokes?downsample=N&include_rest=`.
+
+Next: **Phase 3 — classification + eligibility.** Start from `workout_type` (fully populated in live data, §1.6), add the manual override table, and handle the truncated-summary workouts from §1.7.
