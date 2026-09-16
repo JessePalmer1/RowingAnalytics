@@ -1,0 +1,1 @@
+CREATE DATABASE erg_test;
