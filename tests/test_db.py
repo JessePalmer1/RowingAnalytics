@@ -1,14 +1,15 @@
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import httpx
 import respx
 from conftest import result_payload
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from erg import crypto
 from erg.c2 import oauth
 from erg.c2.client import C2Client
-from erg.models import IntervalSplit, OAuthToken, Stroke, Workout
+from erg.models import Athlete, IntervalSplit, OAuthToken, Stroke, Workout
 from erg.sync import MAX_STROKE_ATTEMPTS, backfill, fetch_strokes
 from erg.tokens import get_access_token, store_token
 from test_client import NoLimit
@@ -182,3 +183,46 @@ def test_refetch_replaces_strokes_and_edit_requeues(db, settings):
     assert db.get(Workout, 1).stroke_status == "pending"
     fetch_strokes(db, client, 42)
     assert db.query(Stroke).filter_by(workout_id=1).count() == len(STROKES)
+
+
+@respx.mock
+def test_classify_override_and_eligibility(db, settings):
+    from erg.models import WorkoutClassification, WorkoutEligibility
+    from erg.pipeline import classify_all, effective_class, set_override
+
+    fake_c2([
+        # 2k test: 6:24 at 180 bpm
+        result_payload(id=1, distance=2000, time=3840, heart_rate={"average": 180}),
+        # steady 30 min at 141 bpm
+        result_payload(id=2, date="2026-02-11 07:00:00", date_utc="2026-02-11 07:00:00",
+                       distance=7110, time=18000, heart_rate={"average": 141}),
+        # intervals
+        result_payload(id=3, date="2026-02-12 07:00:00", date_utc="2026-02-12 07:00:00",
+                       workout_type="FixedTimeInterval", rest_time=2400, workout=INTERVAL_WORKOUT),
+    ])
+    run(db, settings)
+    db.execute(update(Athlete).where(Athlete.id == 42).values(max_heart_rate=199))
+    db.commit()
+
+    stats = classify_all(db, 42)
+    assert stats.classes == Counter({"test_2k": 1, "steady": 1, "interval": 1})
+    assert dict(db.execute(select(WorkoutClassification.workout_id, WorkoutClassification.workout_class)).all()) == {
+        1: "test_2k", 2: "steady", 3: "interval"
+    }
+    # The steady piece has no strokes, so EF is eligible but decoupling is not.
+    elig = dict(db.execute(
+        select(WorkoutEligibility.metric, WorkoutEligibility.eligible).where(WorkoutEligibility.workout_id == 2)
+    ).all())
+    assert elig["ef"] is True and elig["decoupling"] is False
+
+    # An override wins and re-running the classifier does not undo it.
+    set_override(db, 1, "steady", note="was a hard steady, not a test")
+    stats = classify_all(db, 42)
+    assert effective_class(db, 1) == ("steady", True)
+    assert stats.overridden == 1 and stats.classes["steady"] == 2
+    assert db.get(WorkoutClassification, 1).workout_class == "test_2k"  # classifier opinion is kept
+    # Eligibility follows the override: a 6:24 piece is now steady but too short for EF.
+    reason = db.execute(
+        select(WorkoutEligibility.reason).where(WorkoutEligibility.workout_id == 1, WorkoutEligibility.metric == "ef")
+    ).scalar()
+    assert reason == "under 15 min of work"

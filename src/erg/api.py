@@ -1,16 +1,25 @@
 import secrets
 from dataclasses import asdict
 
-from fastapi import Cookie, FastAPI, HTTPException, Query
+from fastapi import Body, Cookie, FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from erg.c2 import oauth
 from erg.c2.client import C2Client
 from erg.config import get_settings
 from erg.db import session_scope
-from erg.models import Athlete, IntervalSplit, Stroke, Workout
+from erg.models import (
+    Athlete,
+    ClassificationOverride,
+    IntervalSplit,
+    Stroke,
+    Workout,
+    WorkoutClassification,
+    WorkoutEligibility,
+)
 from erg.services import client_for_athlete
+from erg.pipeline import classify_all, effective_class, set_override
 from erg.strokes import downsample, with_elapsed
 from erg.sync import backfill, fetch_strokes, upsert_athlete
 from erg.tokens import store_token
@@ -139,3 +148,93 @@ def get_strokes(
             "total_points": total,
             "points": points,
         }
+
+
+@app.get("/workouts/{workout_id}")
+def get_workout(workout_id: int):
+    with session_scope() as s:
+        w = s.get(Workout, workout_id)
+        if w is None:
+            raise HTTPException(404, "workout not found")
+        cls, overridden = effective_class(s, workout_id)
+        classification = s.get(WorkoutClassification, workout_id)
+        eligibility = s.execute(
+            select(WorkoutEligibility).where(WorkoutEligibility.workout_id == workout_id)
+        ).scalars().all()
+        return {
+            "id": w.id,
+            "ended_at_local": w.ended_at_local,
+            "ended_at_utc": w.ended_at_utc,
+            "workout_type": w.workout_type,
+            "work_time_s": float(w.work_time_s),
+            "work_distance_m": w.work_distance_m,
+            "rest_time_s": float(w.rest_time_s),
+            "avg_pace_s_500": float(w.avg_pace_s_500) if w.avg_pace_s_500 else None,
+            "avg_watts": float(w.avg_watts) if w.avg_watts else None,
+            "avg_spm": w.avg_spm,
+            "hr_avg": w.hr_avg,
+            "hr_quality": w.hr_quality,
+            "drag_factor": w.drag_factor,
+            "comments": w.comments,
+            "stroke_status": w.stroke_status,
+            "stroke_warning": w.stroke_warning,
+            "classification": {
+                "class": cls,
+                "overridden": overridden,
+                "classifier_class": classification.workout_class if classification else None,
+                "confidence": float(classification.confidence) if classification else None,
+                "reason": classification.reason if classification else None,
+            },
+            "eligibility": {e.metric: {"eligible": e.eligible, "reason": e.reason} for e in eligibility},
+        }
+
+
+@app.post("/workouts/{workout_id}/classification")
+def override_classification(workout_id: int, workout_class: str = Body(embed=True), note: str | None = Body(None, embed=True)):
+    """Manual override. Always wins over the classifier and survives recomputation."""
+    with session_scope() as s:
+        w = s.get(Workout, workout_id)
+        if w is None:
+            raise HTTPException(404, "workout not found")
+        set_override(s, workout_id, workout_class, note)
+        classify_all(s, w.athlete_id)  # refresh eligibility, which depends on class
+        cls, _ = effective_class(s, workout_id)
+    return {"workout_id": workout_id, "class": cls, "overridden": True}
+
+
+@app.get("/workouts")
+def list_workouts(
+    workout_class: str | None = Query(None, alias="class"),
+    eligible_for: str | None = Query(None, description="metric name, e.g. ef or decoupling"),
+    limit: int = Query(50, le=250),
+):
+    with session_scope() as s:
+        # Manual overrides win over the classifier, so filter on the effective class.
+        effective = func.coalesce(ClassificationOverride.workout_class, WorkoutClassification.workout_class)
+        q = (
+            select(Workout, WorkoutClassification, effective.label("effective_class"))
+            .join(WorkoutClassification, WorkoutClassification.workout_id == Workout.id, isouter=True)
+            .join(ClassificationOverride, ClassificationOverride.workout_id == Workout.id, isouter=True)
+        )
+        if workout_class:
+            q = q.where(effective == workout_class)
+        if eligible_for:
+            q = q.join(
+                WorkoutEligibility,
+                (WorkoutEligibility.workout_id == Workout.id) & (WorkoutEligibility.metric == eligible_for),
+            ).where(WorkoutEligibility.eligible)
+        rows = s.execute(q.order_by(Workout.ended_at_utc.desc()).limit(limit)).all()
+        return [
+            {
+                "id": w.id,
+                "date": w.ended_at_local.date(),
+                "class": eff,
+                "confidence": float(c.confidence) if c else None,
+                "overridden": eff != (c.workout_class if c else None),
+                "work_distance_m": w.work_distance_m,
+                "work_time_s": float(w.work_time_s),
+                "avg_pace_s_500": float(w.avg_pace_s_500) if w.avg_pace_s_500 else None,
+                "hr_avg": w.hr_avg,
+            }
+            for w, c, eff in rows
+        ]

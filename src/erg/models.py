@@ -28,11 +28,23 @@ class Athlete(Base):
     username: Mapped[str | None] = mapped_column(Text)
     max_heart_rate: Mapped[int | None] = mapped_column(Integer)
     weight_g: Mapped[int | None] = mapped_column(Integer)  # normalized from C2 decagrams (7500 = 75 kg)
+    # Athlete-supplied corrections. Never touched by sync; they win over the C2 profile.
+    max_heart_rate_override: Mapped[int | None] = mapped_column(Integer)
+    weight_g_override: Mapped[int | None] = mapped_column(Integer)
     gender: Mapped[str | None] = mapped_column(Text)
     dob: Mapped[str | None] = mapped_column(Text)
     raw: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+    @property
+    def effective_max_heart_rate(self) -> int | None:
+        return self.max_heart_rate_override or self.max_heart_rate
+
+    @property
+    def effective_weight_g(self) -> int | None:
+        return self.weight_g_override or self.weight_g
 
 
 class OAuthToken(Base):
@@ -132,3 +144,36 @@ class Stroke(Base):
     spm: Mapped[int | None] = mapped_column(SmallInteger)
     hr: Mapped[int | None] = mapped_column(SmallInteger)
     is_rest: Mapped[bool] = mapped_column(Boolean)
+
+
+class WorkoutClassification(Base):
+    __tablename__ = "workout_classification"
+
+    workout_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("workout.id", ondelete="CASCADE"), primary_key=True)
+    workout_class: Mapped[str] = mapped_column(Text, index=True)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(3, 2))
+    reason: Mapped[str] = mapped_column(Text)
+    classifier_version: Mapped[int] = mapped_column(Integer)
+    classified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClassificationOverride(Base):
+    """Manual class, always wins over the classifier and survives recomputation."""
+
+    __tablename__ = "classification_override"
+
+    workout_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("workout.id", ondelete="CASCADE"), primary_key=True)
+    workout_class: Mapped[str] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkoutEligibility(Base):
+    __tablename__ = "workout_eligibility"
+
+    workout_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("workout.id", ondelete="CASCADE"), primary_key=True)
+    metric: Mapped[str] = mapped_column(Text, primary_key=True)
+    eligible: Mapped[bool] = mapped_column(Boolean, index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    eligibility_version: Mapped[int] = mapped_column(Integer)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

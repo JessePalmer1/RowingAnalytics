@@ -65,6 +65,8 @@ Measured on 104 sessions, Sept 2025 – Apr 2026:
 **Design consequence:** every derived metric must carry an explicit `eligible` flag and a `reason_ineligible`, not silently drop rows.
 
 ### 1.6 Live-data findings (first backfill, 2026-09-16)
+**The C2 profile is not authoritative.** Max HR reads 199 there but is actually 193; weight reads 87.5 kg but is actually 200 lb (90.7 kg). Corrections live in `athlete.*_override` (`erg profile --max-hr 193 --weight-lb 200`) and are never overwritten by sync. Anything intensity-related must use the effective values.
+
 118 rower sessions, 2025-09-03 → 2026-09-16, ~1,225 km:
 - **All from `ErgData iOS`; no `unknown` workout_type.** Types: FixedTimeInterval 47, VariableInterval 25, FixedDistanceInterval 19, FixedTimeSplits 13, FixedDistanceSplits 11, JustRow 3. The classifier can lean on `workout_type` more than §4.4 assumed (still keep overrides).
 - `date_utc` present on all rows; `timezone` null on 3.
@@ -132,8 +134,10 @@ Measured on 104 sessions, Sept 2025 – Apr 2026:
 athlete (
   id                bigint primary key,        -- C2 user id
   username          text,
-  max_heart_rate    int,                       -- from profile, nullable
+  max_heart_rate    int,                       -- from C2 profile, nullable
   weight_g          int,                       -- normalized from decagrams (x10)
+  max_heart_rate_override int,                 -- athlete-supplied; wins over the profile (193 vs C2's 199)
+  weight_g_override       int,                 -- athlete-supplied (200 lb = 90,718 g vs C2's 87.5 kg)
   created_at        timestamptz
 )
 
@@ -265,15 +269,32 @@ Two mechanisms, both required — webhooks can be missed, polling is the safety 
 - Keep normalization re-runnable from `raw` (`erg renormalize`) so rule changes never need an API re-fetch.
 
 ### 4.4 Session classification
-Do not trust `workout_type` alone. Classify into: `test_2k`, `benchmark_other` (5k/6k/30min), `interval`, `steady`, `warmup_short`, `unknown`.
+Classes (as built): `test_2k`, `test_6k`, `test_10k`, `interval`, `steady`, `short_piece`, `unknown`.
 
-Signals: description regex (`\d+\s*x`, rest tokens `/…r`), interval count from splits, work duration, pace CV across strokes, proximity of pace to known PB. Emit a confidence score; allow manual override stored in a `classification_override` table. **Manual override matters** — you will disagree with the classifier and you need to win.
+- **Pace rules everything (athlete rule):** any session averaging **slower than 1:55/500m of work pace is steady state**, whatever its shape and whatever HR did. A 4x15' or 4x3k at 2:00 with HR over 150 is steady work, not intervals. This check runs before every other signal.
+- **Interval** is what remains with rest periods and work pace faster than 1:55: every shape from 4x10' to 20x30", all hard efforts at or above threshold, one class. Detected by rest time, `workout_type`, summary interval count or stroke resets.
+- **Work pace falls back to the stroke stream** when the C2 summary is truncated (§1.7), so the zero-total workouts still classify. Two of the five turned out to be steady (2:07.5, 2:04.2).
+- **Test distances** are matched within ±2% of 2000/6000/10000m, then confirmed by intensity.
+- **Intensity comes from HR when valid**, for pieces faster than 1:55 at a test distance: ≥82% of max HR is a test; <75% means a steady piece at that distance; between the two, a test with low confidence. **Max HR is the athlete override (193), not the C2 profile value (199)** — see §3 `athlete.max_heart_rate_override`.
+- **Pace fallback when HR is missing:** pace relative to the athlete's best 2k, ceilings 1.06x (2k), 1.18x (6k), 1.26x (10k) — rowing-standard deltas of 2k+8s/500m for a 6k and +15-18s for a 10k. Always low confidence: flag for review.
+- **`short_piece`** is any continuous piece under 10 min that is not at a test distance (warm-up, cool-down or short sprint). Replaces the plan's original `warmup_short`. A 2k test is ~6:30, so test distances are exempt.
+- Confidence is emitted on every row; anything under 0.7 is printed by `erg classify` for review. Manual override lives in `classification_override` and **always wins**, survives recomputation, and re-runs eligibility. **Manual override matters** — you will disagree with the classifier and you need to win.
 
 ---
 
 ## 5. Derived metrics (the actual product)
 
 Each metric stores an eligibility flag. Never compute silently on invalid inputs.
+
+Eligibility rules as built (`workout_eligibility`, one row per workout per metric, with a reason when ineligible):
+
+| Metric | Requires |
+|---|---|
+| `ef` | class `steady`, ≥15 min work, watts, and HR: session average when continuous, else ≥80% stroke-HR coverage (interval-shaped steady work must be computed from work strokes only, since session averages include rest) |
+| `decoupling` | everything `ef` needs, plus one continuous piece, ≥20 min, and stroke HR covering ≥80% |
+| `hrr` | class `interval` with HR recorded during rest strokes |
+| `pacing` | ≥30 strokes stored, a ratable class, no stroke parse warning |
+| `dps` | stroke count and work distance present |
 
 ### 5.1 Efficiency Factor (EF)
 `EF = avg_watts / avg_hr` over the eligible portion.
@@ -347,7 +368,7 @@ Downsampling strokes matters: a 15k has thousands of strokes; use largest-triang
 
 **Phase 2 — Strokes.** Stroke fetch worker, interval-aware parsing, bulk insert, `has_strokes` handling, downsampling endpoint. *Done when:* you can pull the stroke series for any 2k and plot it. **✅ Done 2026-09-16** — 113/113 workouts fetched (106,020 strokes, 0 missing, 0 errors, 5 truncated-summary warnings, §1.7); 2k 110330485 (6:23.9) plotted from `/workouts/{id}/strokes` with and without LTTB downsampling.
 
-**Phase 3 — Classification + eligibility.** Session classifier with confidence + manual override, HR validation, eligibility flags with reasons. *Done when:* you agree with the classifier on all 104 sessions (after overrides).
+**Phase 3 — Classification + eligibility.** Session classifier with confidence + manual override, HR validation, eligibility flags with reasons. *Done when:* you agree with the classifier on all 118 sessions (after overrides). **Built 2026-09-17** with the athlete's 1:55 steady rule applied: 118 classified as steady 74, interval 33, test_6k 4, test_2k 3, short_piece 3, test_10k 1 (2 confirmed manual overrides). Eligible: ef 44, decoupling 6, hrr 25, pacing 105, dps 111.
 
 **Phase 4 — Metrics engine.** EF, decoupling, HRR, pacing shape, DPS, daily load, ACWR. Versioned, recomputable, backfillable. *Done when:* you can see your EF and decoupling trend across the season and it matches the Feb-peak/April-detrain story you already know from the data.
 
