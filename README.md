@@ -19,6 +19,7 @@ Register an app at https://log.concept2.com/developers/keys with redirect URI `h
 ```sh
 uv run uvicorn erg.api:app --reload  # then visit http://localhost:8000/auth/login
                                      # strokes: GET /workouts/{id}/strokes?downsample=200&include_rest=false
+uv run erg sync                      # after logging new workouts: backfill + fetch-strokes
 uv run erg backfill                  # page all rower results into Postgres (safe to re-run)
 uv run erg fetch-strokes             # drain the stroke fetch queue (new/edited workouts)
 uv run erg renormalize               # re-derive normalized columns from stored raw payloads (no API calls)
