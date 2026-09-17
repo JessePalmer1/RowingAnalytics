@@ -1,5 +1,6 @@
 import secrets
 from dataclasses import asdict
+from datetime import date as Date
 
 from fastapi import Body, Cookie, FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
@@ -12,13 +13,17 @@ from erg.db import session_scope
 from erg.models import (
     Athlete,
     ClassificationOverride,
+    DailyLoad,
     IntervalSplit,
+    RollingMetric,
     Stroke,
     Workout,
     WorkoutClassification,
     WorkoutEligibility,
+    WorkoutMetric,
 )
 from erg.services import client_for_athlete
+from erg.metrics_runner import ACUTE_DAYS, CHRONIC_DAYS
 from erg.pipeline import classify_all, effective_class, set_override
 from erg.strokes import downsample, with_elapsed
 from erg.sync import backfill, fetch_strokes, upsert_athlete
@@ -186,7 +191,34 @@ def get_workout(workout_id: int):
                 "reason": classification.reason if classification else None,
             },
             "eligibility": {e.metric: {"eligible": e.eligible, "reason": e.reason} for e in eligibility},
+            "metrics": _metrics_dict(s.get(WorkoutMetric, workout_id)),
         }
+
+
+def _metrics_dict(m) -> dict | None:
+    if m is None:
+        return None
+    as_float = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "ef": as_float(m.ef),
+        "work_watts": as_float(m.work_watts),
+        "work_hr": as_float(m.work_hr),
+        "decoupling_pct": as_float(m.decoupling_pct),
+        "ef_first_half": as_float(m.ef_first_half),
+        "ef_second_half": as_float(m.ef_second_half),
+        "pace_cv": as_float(m.pace_cv),
+        "spm_cv": as_float(m.spm_cv),
+        "first_half_pace": as_float(m.first_half_pace),
+        "second_half_pace": as_float(m.second_half_pace),
+        "fade_onset_m": m.fade_onset_m,
+        "dps_m": as_float(m.dps_m),
+        "hrr_bpm": as_float(m.hrr_bpm),
+        "hrr_rest_s": as_float(m.hrr_rest_s),
+        "hrr_intervals": m.hrr_intervals,
+        "kj": as_float(m.kj),
+        "trimp": as_float(m.trimp),
+        "metric_version": m.metric_version,
+    }
 
 
 @app.post("/workouts/{workout_id}/classification")
@@ -238,3 +270,106 @@ def list_workouts(
             }
             for w, c, eff in rows
         ]
+
+
+METRIC_COLUMNS = {
+    "ef": WorkoutMetric.ef,
+    "decoupling": WorkoutMetric.decoupling_pct,
+    "hrr": WorkoutMetric.hrr_bpm,
+    "dps": WorkoutMetric.dps_m,
+    "pace_cv": WorkoutMetric.pace_cv,
+    "kj": WorkoutMetric.kj,
+    "trimp": WorkoutMetric.trimp,
+}
+
+
+@app.get("/metrics/trend")
+def metric_trend(
+    name: str = Query("ef", description=f"one of {', '.join(METRIC_COLUMNS)}"),
+    workout_class: str | None = Query(None, alias="class"),
+    from_: Date | None = Query(None, alias="from"),
+    to: Date | None = None,
+    hrr_rest_s: float | None = Query(None, description="HRR only compares at matched rest length"),
+):
+    """One point per eligible workout. No smoothing: the caller decides how to present it."""
+    column = METRIC_COLUMNS.get(name)
+    if column is None:
+        raise HTTPException(400, f"unknown metric {name!r}; try one of {', '.join(METRIC_COLUMNS)}")
+
+    with session_scope() as s:
+        effective = func.coalesce(ClassificationOverride.workout_class, WorkoutClassification.workout_class)
+        q = (
+            select(Workout.id, Workout.ended_at_local, effective, column, Workout.drag_factor, Workout.work_time_s)
+            .join(WorkoutMetric, WorkoutMetric.workout_id == Workout.id)
+            .join(WorkoutClassification, WorkoutClassification.workout_id == Workout.id, isouter=True)
+            .join(ClassificationOverride, ClassificationOverride.workout_id == Workout.id, isouter=True)
+            .where(column.is_not(None))
+            .order_by(Workout.ended_at_local)
+        )
+        if workout_class:
+            q = q.where(effective == workout_class)
+        if from_:
+            q = q.where(Workout.ended_at_local >= from_)
+        if to:
+            q = q.where(Workout.ended_at_local <= to)
+        if name == "hrr" and hrr_rest_s is not None:
+            q = q.where(WorkoutMetric.hrr_rest_s == hrr_rest_s)
+
+        points = [
+            {
+                "workout_id": wid,
+                "date": ended.date(),
+                "class": cls,
+                "value": float(value),
+                "drag_factor": drag,
+                "work_time_s": float(work_time),
+            }
+            for wid, ended, cls, value, drag, work_time in s.execute(q).all()
+        ]
+    note = None
+    if name == "hrr" and hrr_rest_s is None:
+        note = "HR recovery depends on rest length; filter with hrr_rest_s to compare like with like"
+    return {"metric": name, "points": points, "note": note}
+
+
+@app.get("/load/daily")
+def load_daily(from_: Date | None = Query(None, alias="from"), to: Date | None = None):
+    with session_scope() as s:
+        q = select(DailyLoad).order_by(DailyLoad.date)
+        if from_:
+            q = q.where(DailyLoad.date >= from_)
+        if to:
+            q = q.where(DailyLoad.date <= to)
+        return [
+            {
+                "date": d.date,
+                "sessions": d.sessions,
+                "work_time_s": float(d.work_time_s),
+                "work_distance_m": d.work_distance_m,
+                "kj": float(d.kj) if d.kj is not None else None,
+                "trimp": float(d.trimp) if d.trimp is not None else None,
+            }
+            for d in s.execute(q).scalars()
+        ]
+
+
+@app.get("/load/acwr")
+def load_acwr(date: Date | None = None):
+    """Acute:chronic workload ratio — a descriptive load-balance indicator, not advice."""
+    with session_scope() as s:
+        q = select(RollingMetric).where(RollingMetric.metric_name.in_(["acwr", "kj", "monotony"]))
+        if date:
+            q = q.where(RollingMetric.date == date)
+        else:
+            latest = s.execute(select(func.max(RollingMetric.date))).scalar()
+            if latest is None:
+                return {}
+            q = q.where(RollingMetric.date == latest)
+        rows = s.execute(q).scalars().all()
+        if not rows:
+            raise HTTPException(404, "no rolling metrics for that date")
+        out = {"date": rows[0].date, "acute_days": ACUTE_DAYS, "chronic_days": CHRONIC_DAYS}
+        for r in rows:
+            key = r.metric_name if r.metric_name != "kj" else f"kj_{r.window_days}d"
+            out[key] = float(r.value) if r.value is not None else None
+        return out

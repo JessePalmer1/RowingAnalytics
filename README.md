@@ -1,7 +1,7 @@
 # RowingAnalytics
 experimenting with concept2 API for training data analytics projects
 
-See [erg-analytics-data-layer-plan.md](erg-analytics-data-layer-plan.md) for the full spec. **Current status: Phases 1 (ingest), 2 (strokes) and 3 (classification + eligibility) done.**
+See [erg-analytics-data-layer-plan.md](erg-analytics-data-layer-plan.md) for the full spec. **Current status: Phases 1-4 done** (ingest, strokes, classification + eligibility, metrics engine).
 
 ## Setup
 
@@ -19,6 +19,8 @@ Register an app at https://log.concept2.com/developers/keys with redirect URI `h
 ```sh
 uv run uvicorn erg.api:app --reload  # then visit http://localhost:8000/auth/login
                                      # GET /workouts?class=steady&eligible_for=ef
+                                     # GET /metrics/trend?name=ef&class=steady
+                                     # GET /load/daily?from=2026-09-01   GET /load/acwr
                                      # GET /workouts/{id}   (+ classification + eligibility)
                                      # GET /workouts/{id}/strokes?downsample=200&include_rest=false
                                      # POST /workouts/{id}/classification  {"workout_class": "steady"}
@@ -28,6 +30,7 @@ uv run erg fetch-strokes             # drain the stroke fetch queue (new/edited 
 uv run erg profile --max-hr 193 --weight-lb 200   # corrections to the C2 profile
 uv run erg classify                  # classify sessions + flag metric eligibility (no API calls)
 uv run erg override 123456 steady --note "hard steady, not a test"
+uv run erg metrics                   # EF, decoupling, HRR, pacing, DPS, daily load, ACWR
 uv run erg renormalize               # re-derive normalized columns from stored raw payloads (no API calls)
 ```
 
@@ -47,4 +50,6 @@ uv run pytest                        # DB tests skip if Postgres isn't running
 - `src/erg/classify.py` — session classification (test_2k/6k/10k, interval, steady, short_piece) with confidence
 - `src/erg/eligibility.py` — per-metric eligibility rules, each with a reason when ineligible
 - `src/erg/pipeline.py` — runs classification + eligibility over stored workouts; manual overrides
+- `src/erg/metrics.py` — derived metrics as pure functions (EF, decoupling, pacing, HRR, TRIMP, ACWR)
+- `src/erg/metrics_runner.py` — computes and stores metrics, daily load and rolling windows
 - `src/erg/api.py`, `src/erg/cli.py` — FastAPI app and `erg` CLI

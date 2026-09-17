@@ -31,6 +31,7 @@ class EligibilityInputs:
     strokes_with_hr: int
     rest_strokes_with_hr: int
     stroke_warning: str | None
+    interval_hr_pairs: int = 0  # intervals with both ending and rest HR in the C2 summary
 
 
 @dataclass(frozen=True)
@@ -75,12 +76,16 @@ def _decoupling(i: EligibilityInputs) -> str | None:
 
 
 def _hrr(i: EligibilityInputs) -> str | None:
-    if i.workout_class != "interval":
-        return f"not an interval session ({i.workout_class})"
-    if not i.strokes_stored:
-        return "no stroke data"
-    if not i.rest_strokes_with_hr:
-        return "no HR recorded during rest periods"
+    """HR recovery comes from the C2 per-interval summary (ending HR vs rest HR).
+
+    Stroke data almost never samples far enough into a rest to measure this, so the
+    summary is the only usable source. Any session with rest periods qualifies, including
+    interval-shaped steady work.
+    """
+    if i.is_continuous:
+        return f"continuous piece ({i.workout_class}) — no rest periods to recover across"
+    if not i.interval_hr_pairs:
+        return "no ending/rest HR pair in the interval summary"
     return None
 
 

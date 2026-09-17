@@ -311,8 +311,9 @@ Eligibility rules as built (`workout_eligibility`, one row per workout per metri
 - *This is the single most useful metric here and it is invisible in the Concept2 logbook.*
 
 ### 5.3 HR recovery (HRR)
-From stroke HR during rest intervals: `HRR60 = hr_peak_at_interval_end − hr_at_60s_into_rest`.
-- Only computable on interval workouts with stroke HR through the rest period.
+**Revised against live data.** The stroke-based definition (`hr at 60s into rest`) is not computable: only **1 of 118** workouts has stroke HR sampled ≥55s into a rest — rest sampling usually stops within 10–30s. Instead HRR comes from the C2 per-interval summary: `hrr = median(hr_ending − hr_rest)` across the session's intervals, which covers **30 workouts / 219 intervals**.
+- **Recovery scales with rest length** (measured: 7 bpm after 20s, 14.7 after 30s, 32.7 after 90s, 48.7 after 120s, 63.6 after 180s), so `hrr_rest_s` is stored alongside and **trends are only valid at matched rest length**. `/metrics/trend?name=hrr&hrr_rest_s=180` enforces this.
+- Available on any session with rest periods, including interval-shaped steady work — not just the `interval` class.
 - Trend over time at matched work intensity. A classic fitness marker, and it is **already sitting in your logbook unused**.
 
 ### 5.4 Pacing shape
@@ -370,7 +371,13 @@ Downsampling strokes matters: a 15k has thousands of strokes; use largest-triang
 
 **Phase 3 — Classification + eligibility.** Session classifier with confidence + manual override, HR validation, eligibility flags with reasons. *Done when:* you agree with the classifier on all 118 sessions (after overrides). **Built 2026-09-17** with the athlete's 1:55 steady rule applied: 118 classified as steady 74, interval 33, test_6k 4, test_2k 3, short_piece 3, test_10k 1 (2 confirmed manual overrides). Eligible: ef 44, decoupling 6, hrr 25, pacing 105, dps 111.
 
-**Phase 4 — Metrics engine.** EF, decoupling, HRR, pacing shape, DPS, daily load, ACWR. Versioned, recomputable, backfillable. *Done when:* you can see your EF and decoupling trend across the season and it matches the Feb-peak/April-detrain story you already know from the data.
+**Phase 4 — Metrics engine.** EF, decoupling, HRR, pacing shape, DPS, daily load, ACWR. Versioned, recomputable, backfillable. *Done when:* you can see your EF and decoupling trend across the season and it matches the Feb-peak/April-detrain story you already know from the data. **Built 2026-09-17:** 44 EF, 6 decoupling, 30 HRR, 105 pacing, 111 DPS; 106 load days; 1,516 rolling rows. `erg metrics` recomputes everything from stored data.
+
+Implementation notes:
+- All stroke metrics are **time-weighted per stroke** (`dt` between strokes, capped at 10s) and run on **work strokes only**, so rest never dilutes EF or decoupling.
+- EF falls back to session averages when a workout has no strokes.
+- `kj`/`trimp` stay null rather than zero when a session cannot produce them, so daily load never reads a missing value as a real zero.
+- TRIMP (Banister, male coefficients) assumes a resting HR of 60 unless `athlete.resting_hr_override` is set (`erg profile --resting-hr`).
 
 **Phase 5 — Webhooks + live sync.** Webhook endpoint, verification, job enqueue, nightly reconciliation poll.
 

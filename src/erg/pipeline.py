@@ -82,6 +82,22 @@ def _stroke_aggregates(session: Session, athlete_id: int) -> dict[int, dict]:
     return {r.workout_id: r._mapping for r in rows}
 
 
+def _interval_hr_pairs(session: Session, athlete_id: int) -> dict[int, int]:
+    """Intervals carrying both ending and rest HR — the only usable source for HRR."""
+    rows = session.execute(
+        select(IntervalSplit.workout_id, func.count().cast(Integer))
+        .join(Workout, Workout.id == IntervalSplit.workout_id)
+        .where(
+            Workout.athlete_id == athlete_id,
+            IntervalSplit.kind == "interval",
+            IntervalSplit.hr_ending.is_not(None),
+            IntervalSplit.hr_rest.is_not(None),
+        )
+        .group_by(IntervalSplit.workout_id)
+    ).all()
+    return {wid: count for wid, count in rows}
+
+
 def _summary_interval_counts(session: Session, athlete_id: int) -> dict[int, int]:
     rows = session.execute(
         select(IntervalSplit.workout_id, func.count().cast(Integer))
@@ -100,6 +116,7 @@ def classify_all(session: Session, athlete_id: int) -> ClassifyStats:
     strokes = _stroke_aggregates(session, athlete_id)
     stroke_totals = _stroke_work_totals(session, athlete_id)
     summary_intervals = _summary_interval_counts(session, athlete_id)
+    hr_pairs = _interval_hr_pairs(session, athlete_id)
     overrides = dict(
         session.execute(
             select(ClassificationOverride.workout_id, ClassificationOverride.workout_class)
@@ -174,6 +191,7 @@ def classify_all(session: Session, athlete_id: int) -> ClassifyStats:
                 strokes_stored=agg.get("stored") or 0,
                 strokes_with_hr=agg.get("with_hr") or 0,
                 rest_strokes_with_hr=agg.get("rest_with_hr") or 0,
+                interval_hr_pairs=hr_pairs.get(w.id, 0),
                 stroke_warning=w.stroke_warning,
             )
         ):
@@ -229,7 +247,11 @@ LB_TO_G = Decimal("453.59237")
 
 
 def set_profile(
-    session: Session, athlete_id: int, max_hr: int | None = None, weight_lb: Decimal | None = None
+    session: Session,
+    athlete_id: int,
+    max_hr: int | None = None,
+    weight_lb: Decimal | None = None,
+    resting_hr: int | None = None,
 ) -> Athlete:
     """Athlete-supplied corrections to the C2 profile. Never overwritten by sync."""
     athlete = session.get(Athlete, athlete_id)
@@ -239,5 +261,7 @@ def set_profile(
         athlete.max_heart_rate_override = max_hr
     if weight_lb is not None:
         athlete.weight_g_override = int(weight_lb * LB_TO_G)
+    if resting_hr is not None:
+        athlete.resting_hr_override = resting_hr
     session.commit()
     return athlete

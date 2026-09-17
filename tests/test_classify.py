@@ -139,10 +139,13 @@ def test_interval_shaped_steady_needs_stroke_hr_and_cannot_decouple():
     assert "no stroke data" in elig(**shaped, strokes_stored=0, strokes_with_hr=0)["ef"].reason
 
 
-def test_hrr_needs_intervals_with_rest_hr():
-    assert elig(workout_class="interval", rest_strokes_with_hr=12)["hrr"].eligible
-    assert elig(workout_class="interval")["hrr"].reason == "no HR recorded during rest periods"
-    assert elig()["hrr"].reason == "not an interval session (steady)"
+def test_hrr_needs_rest_periods_with_summary_hr_pairs():
+    # Source is the C2 per-interval summary, not stroke HR, so interval-shaped steady
+    # sessions qualify too.
+    assert elig(is_continuous=False, interval_hr_pairs=5)["hrr"].eligible
+    assert elig(workout_class="interval", is_continuous=False, interval_hr_pairs=5)["hrr"].eligible
+    assert elig(is_continuous=False)["hrr"].reason == "no ending/rest HR pair in the interval summary"
+    assert "no rest periods" in elig(interval_hr_pairs=5)["hrr"].reason
 
 
 def test_pacing_and_dps():

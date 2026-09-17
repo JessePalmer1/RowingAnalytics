@@ -9,6 +9,7 @@ from erg.config import Settings, get_settings
 from erg.eligibility import METRICS
 from erg.db import session_scope
 from erg.models import OAuthToken
+from erg.metrics_runner import compute_load, compute_workout_metrics
 from erg.pipeline import classify_all, set_override, set_profile
 from erg.services import client_for_athlete
 from erg.sync import BackfillStats, StrokeFetchStats, backfill, fetch_strokes, renormalize
@@ -79,6 +80,9 @@ def main() -> None:
     pr.add_argument("--athlete-id", type=int)
     pr.add_argument("--max-hr", type=int)
     pr.add_argument("--weight-lb", type=Decimal)
+    pr.add_argument("--resting-hr", type=int, help="used for TRIMP; assumed 60 otherwise")
+    me = sub.add_parser("metrics", help="compute derived metrics, daily load and rolling windows (no API calls)")
+    me.add_argument("--athlete-id", type=int)
     sub.add_parser("renormalize", help="re-derive normalized columns + interval splits from stored raw payloads")
     args = parser.parse_args()
 
@@ -116,13 +120,23 @@ def main() -> None:
     elif args.cmd == "profile":
         athlete_id = _resolve_athlete(args.athlete_id)
         with session_scope() as s:
-            a = set_profile(s, athlete_id, max_hr=args.max_hr, weight_lb=args.weight_lb)
+            a = set_profile(s, athlete_id, max_hr=args.max_hr, weight_lb=args.weight_lb, resting_hr=args.resting_hr)
             print(
                 f"athlete {a.id}: max HR {a.effective_max_heart_rate} "
                 f"(C2 profile: {a.max_heart_rate}), weight {a.effective_weight_g / 1000:.1f} kg "
                 f"/ {a.effective_weight_g / 453.59237:.0f} lb (C2 profile: {a.weight_g / 1000:.1f} kg)"
             )
         print("rerun `erg classify` to apply")
+
+    elif args.cmd == "metrics":
+        athlete_id = _resolve_athlete(args.athlete_id)
+        with session_scope() as s:
+            stats = compute_workout_metrics(s, athlete_id)
+            load = compute_load(s, athlete_id)
+        print(f"metrics for {stats.workouts} workouts:")
+        for name in METRICS:
+            print(f"  {name:12} {stats.computed[name]}")
+        print(f"daily load: {load.days} days, rolling: {load.rolling_rows} rows")
 
     elif args.cmd == "renormalize":
         with session_scope() as s:

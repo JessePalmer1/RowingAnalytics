@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import date as Date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -30,6 +31,7 @@ class Athlete(Base):
     weight_g: Mapped[int | None] = mapped_column(Integer)  # normalized from C2 decagrams (7500 = 75 kg)
     # Athlete-supplied corrections. Never touched by sync; they win over the C2 profile.
     max_heart_rate_override: Mapped[int | None] = mapped_column(Integer)
+    resting_hr_override: Mapped[int | None] = mapped_column(Integer)  # for TRIMP; defaults to 60
     weight_g_override: Mapped[int | None] = mapped_column(Integer)
     gender: Mapped[str | None] = mapped_column(Text)
     dob: Mapped[str | None] = mapped_column(Text)
@@ -176,4 +178,53 @@ class WorkoutEligibility(Base):
     eligible: Mapped[bool] = mapped_column(Boolean, index=True)
     reason: Mapped[str | None] = mapped_column(Text)
     eligibility_version: Mapped[int] = mapped_column(Integer)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkoutMetric(Base):
+    __tablename__ = "workout_metric"
+
+    workout_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("workout.id", ondelete="CASCADE"), primary_key=True)
+    ef: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))  # watts per bpm, work portion only
+    work_watts: Mapped[Decimal | None] = mapped_column(Numeric(8, 1))
+    work_hr: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
+    decoupling_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    ef_first_half: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    ef_second_half: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    pace_cv: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    spm_cv: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    first_half_pace: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    second_half_pace: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    fade_onset_m: Mapped[int | None] = mapped_column(Integer)
+    dps_m: Mapped[Decimal | None] = mapped_column(Numeric(5, 3))
+    hrr_bpm: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))  # HR drop across interval rests
+    hrr_rest_s: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))  # only comparable at matched rest length
+    hrr_intervals: Mapped[int | None] = mapped_column(Integer)
+    kj: Mapped[Decimal | None] = mapped_column(Numeric(9, 1))
+    trimp: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metric_version: Mapped[int] = mapped_column(Integer)
+
+
+class DailyLoad(Base):
+    __tablename__ = "daily_load"
+
+    athlete_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("athlete.id", ondelete="CASCADE"), primary_key=True)
+    date: Mapped[Date] = mapped_column(Date, primary_key=True)  # athlete-local date
+    sessions: Mapped[int] = mapped_column(Integer)
+    work_time_s: Mapped[Decimal] = mapped_column(Numeric(10, 1))
+    work_distance_m: Mapped[int] = mapped_column(Integer)
+    kj: Mapped[Decimal | None] = mapped_column(Numeric(9, 1))
+    trimp: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RollingMetric(Base):
+    __tablename__ = "rolling_metric"
+
+    athlete_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("athlete.id", ondelete="CASCADE"), primary_key=True)
+    date: Mapped[Date] = mapped_column(Date, primary_key=True)
+    metric_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    window_days: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
