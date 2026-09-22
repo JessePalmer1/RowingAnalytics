@@ -26,6 +26,7 @@ from erg.services import client_for_athlete
 from erg.metrics_runner import ACUTE_DAYS, CHRONIC_DAYS
 from erg.pipeline import classify_all, effective_class, set_override
 from erg.strokes import downsample, with_elapsed
+from erg.summary import week_summary
 from erg.sync import backfill, fetch_strokes, upsert_athlete
 from erg.tokens import store_token
 
@@ -212,6 +213,8 @@ def _metrics_dict(m) -> dict | None:
         "second_half_pace": as_float(m.second_half_pace),
         "fade_onset_m": m.fade_onset_m,
         "dps_m": as_float(m.dps_m),
+        "dps_cv": as_float(m.dps_cv),
+        "dps_source": m.dps_source,
         "hrr_bpm": as_float(m.hrr_bpm),
         "hrr_rest_s": as_float(m.hrr_rest_s),
         "hrr_intervals": m.hrr_intervals,
@@ -373,3 +376,14 @@ def load_acwr(date: Date | None = None):
             key = r.metric_name if r.metric_name != "kj" else f"kj_{r.window_days}d"
             out[key] = float(r.value) if r.value is not None else None
         return out
+
+
+@app.get("/summary/week")
+def summary_week(athlete_id: int | None = None, date: Date | None = None):
+    """Digest payload for one Monday-Sunday week. Descriptive only, no recommendations."""
+    with session_scope() as s:
+        if athlete_id is None:
+            athlete_id = s.execute(select(Athlete.id).order_by(Athlete.id).limit(1)).scalar()
+            if athlete_id is None:
+                raise HTTPException(404, "no athlete in the database")
+        return week_summary(s, athlete_id, date)

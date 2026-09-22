@@ -196,7 +196,9 @@ class WorkoutMetric(Base):
     first_half_pace: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     second_half_pace: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     fade_onset_m: Mapped[int | None] = mapped_column(Integer)
-    dps_m: Mapped[Decimal | None] = mapped_column(Numeric(5, 3))
+    dps_m: Mapped[Decimal | None] = mapped_column(Numeric(5, 3))  # from work strokes when available
+    dps_cv: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))  # stroke-to-stroke length variability
+    dps_source: Mapped[str | None] = mapped_column(Text)  # 'work_strokes' | 'c2_stroke_count'
     hrr_bpm: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))  # HR drop across interval rests
     hrr_rest_s: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))  # only comparable at matched rest length
     hrr_intervals: Mapped[int | None] = mapped_column(Integer)

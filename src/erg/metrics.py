@@ -192,9 +192,22 @@ def hr_recovery(intervals: list[tuple[float, int | None, int | None]]) -> tuple[
 
 
 def distance_per_stroke(distance_m: float, stroke_count: int | None) -> float | None:
+    """Fallback when there are no strokes. C2's stroke_count includes rest strokes, so on
+    interval sessions this understates DPS by a few percent; prefer distance_per_stroke_from_samples."""
     if not stroke_count or distance_m <= 0:
         return None
     return distance_m / stroke_count
+
+
+def stroke_length(samples: list[WorkSample]) -> tuple[float | None, float | None]:
+    """Mean and coefficient of variation of per-stroke distance over the work portion."""
+    lengths = [s.distance_m for s in samples if s.distance_m > 0]
+    if len(lengths) < 4:
+        return None, None
+    mean = statistics.fmean(lengths)
+    if mean <= 0:
+        return None, None
+    return mean, statistics.stdev(lengths) / mean
 
 
 def trimp(duration_s: float, hr_avg: int | None, hr_max: int | None, hr_rest: int = TRIMP_RESTING_HR_DEFAULT) -> float | None:

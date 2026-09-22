@@ -102,3 +102,14 @@ def test_acwr_and_monotony():
     assert metrics.monotony([10, 10, 10, 10]) is None  # no variation: undefined
     assert math.isclose(metrics.monotony([0, 10, 0, 10]), 0.8660254, rel_tol=1e-6)
     assert metrics.monotony([5]) is None
+
+
+def test_stroke_length_mean_and_variability():
+    even = [sample(distance=10.0) for _ in range(10)]
+    mean, cv = metrics.stroke_length(even)
+    assert mean == 10.0 and cv == 0.0
+
+    varied = [sample(distance=d) for d in (8.0, 10.0, 12.0, 10.0, 9.0, 11.0)]
+    mean, cv = metrics.stroke_length(varied)
+    assert round(mean, 2) == 10.0 and 0 < cv < 0.2
+    assert metrics.stroke_length([sample()]) == (None, None)

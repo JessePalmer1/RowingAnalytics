@@ -102,7 +102,16 @@ def compute_workout_metrics(session: Session, athlete_id: int) -> MetricStats:
             }
 
         if "dps" in allowed:
-            values["dps_m"] = _d(metrics.distance_per_stroke(float(w.work_distance_m), w.stroke_count), "0.001")
+            # C2's stroke_count includes rest strokes, so work strokes win when we have them.
+            mean_length, cv = metrics.stroke_length(samples)
+            if mean_length is not None:
+                values |= {"dps_m": _d(mean_length, "0.001"), "dps_cv": _d(cv), "dps_source": "work_strokes"}
+            else:
+                values |= {
+                    "dps_m": _d(metrics.distance_per_stroke(float(w.work_distance_m), w.stroke_count), "0.001"),
+                    "dps_cv": None,
+                    "dps_source": "c2_stroke_count",
+                }
 
         if "hrr" in allowed:
             intervals = session.execute(

@@ -226,3 +226,45 @@ def test_classify_override_and_eligibility(db, settings):
         select(WorkoutEligibility.reason).where(WorkoutEligibility.workout_id == 1, WorkoutEligibility.metric == "ef")
     ).scalar()
     assert reason == "under 15 min of work"
+
+
+def test_week_summary(db, settings):
+    from datetime import date
+
+    from erg.metrics_runner import compute_load, compute_workout_metrics
+    from erg.pipeline import classify_all
+    from erg.summary import week_bounds, week_summary
+
+    assert week_bounds(date(2026, 2, 4)) == (date(2026, 2, 2), date(2026, 2, 8))
+
+    with respx.mock:
+        fake_c2([
+            # Mon: steady 30 min at 2:06/500m. Wed: intervals at 1:40. Previous week: one steady.
+            result_payload(id=1, date="2026-02-02 07:00:00", date_utc="2026-02-02 12:00:00",
+                           distance=7110, time=18000, heart_rate={"average": 141}),
+            result_payload(id=2, date="2026-02-04 07:00:00", date_utc="2026-02-04 12:00:00",
+                           workout_type="FixedTimeInterval", distance=9000, time=18000, rest_time=2400,
+                           heart_rate={"average": 160}, workout=INTERVAL_WORKOUT),
+            result_payload(id=3, date="2026-01-28 07:00:00", date_utc="2026-01-28 12:00:00",
+                           distance=7000, time=18000, heart_rate={"average": 139}),
+        ])
+        run(db, settings)
+    db.execute(update(Athlete).where(Athlete.id == 42).values(max_heart_rate=193))
+    db.commit()
+    classify_all(db, 42)
+    compute_workout_metrics(db, 42)
+    compute_load(db, 42)
+
+    s = week_summary(db, 42, date(2026, 2, 4))
+    assert (s["week_start"], s["week_end"]) == (date(2026, 2, 2), date(2026, 2, 8))
+    assert s["totals"]["sessions"] == 2 and s["totals"]["days_trained"] == 2
+    assert s["totals"]["work_distance_m"] == 16110
+    # The interval session averages 1:40/500m, so it stays interval work.
+    assert {name: b["sessions"] for name, b in s["by_class"].items()} == {"steady": 1, "interval": 1}
+    assert s["ef"]["sessions"] == 1 and s["ef"]["mean"] > 0
+    assert s["previous_week"]["sessions"] == 1  # the 2026-01-28 session
+    assert s["load"]["acwr"] is not None
+    assert [p["workout_id"] for p in s["pieces"]] == [1, 2]
+
+    # Defaults to the week of the most recent workout.
+    assert week_summary(db, 42)["week_start"] == date(2026, 2, 2)
