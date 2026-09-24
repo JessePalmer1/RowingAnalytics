@@ -381,13 +381,15 @@ Implementation notes:
 
 **Phase 5 — Webhooks + live sync.** Webhook endpoint, verification, job enqueue, nightly reconciliation poll.
 
-**Phase 6 — Query API + first frontend.**
+**Phase 6 — Query API + first frontend.** Query surface built: `/workouts`, `/workouts/{id}`, `/workouts/{id}/strokes`, `/workouts/compare`, `/metrics/trend`, `/load/daily`, `/load/acwr`, `/summary/week`. First frontend built: the race replay UI at `/replay` (see §8).
 
 ---
 
 ## 8. Downstream features (consumers of this layer)
 
-**Race replay UI** — `/workouts/{id}/strokes` + `/workouts/compare`. Ghost racing, split attribution ("2.4 of your 3.1s loss came between 1000–1500m"), pace-HR decoupling overlay, DPS trace. Shareable permalink with server-rendered OG card.
+**Race replay UI** — **built 2026-09-24**, served at `/replay` by the same FastAPI app (`src/erg/web/`, vanilla JS + canvas, no build step and no CDN). Piece picker filtered by class, animated ghost race with scrub and speed control, live gap/pace/HR readout, per-segment split table, and pace / time-delta / HR / stroke-length charts. `/workouts/compare?ids=&points=&segment_m=` does the distance-aligned interpolation and split attribution server-side, and warns when drag factor differs across the selected pieces. Verified against the three 2k tests: the April piece lost 3.67s to December, 2.4s of it after 1000m.
+
+Still to do here: shareable permalink with a server-rendered OG card.
 
 **Meters/challenge tracker** — `/load/daily`, `/challenges/progress`. Weekly goal projection ("at current pace you finish 14k short; you need 3 more sessions"), streaks, consistency, live webhook updates. Squad leaderboards once multiple athletes authorize.
 

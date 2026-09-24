@@ -268,3 +268,46 @@ def test_week_summary(db, settings):
 
     # Defaults to the week of the most recent workout.
     assert week_summary(db, 42)["week_start"] == date(2026, 2, 2)
+
+
+@respx.mock
+def test_compare_endpoint(db, settings):
+    from fastapi.testclient import TestClient
+
+    from erg import api
+
+    fake_c2([
+        result_payload(id=1, distance=2000, time=3840),
+        result_payload(id=2, date="2026-02-11 07:00:00", date_utc="2026-02-11 07:00:00", distance=2000, time=3900),
+    ])
+    run(db, settings)
+    # 500m at an even 1:36 pace, then the same piece 2s slower over the second 500m.
+    def strokes(pace_tenths_second_half):
+        rows, t, d = [], 0, 0
+        for i in range(100):
+            pace = 960 if i < 50 else pace_tenths_second_half
+            t += 96 if i < 50 else int(pace * 10 / 100)
+            d += 100
+            rows.append({"t": t, "d": d, "p": pace, "spm": 32, "hr": 170})
+        return rows
+
+    respx.get(strokes_url(1)).mock(return_value=httpx.Response(200, json={"data": strokes(960)}))
+    respx.get(strokes_url(2)).mock(return_value=httpx.Response(200, json={"data": strokes(1000)}))
+    client = C2Client(settings, lambda: "tok", http=httpx.Client(), limiter=NoLimit())
+    fetch_strokes(db, client, 42)
+
+    with TestClient(api.app) as http:
+        assert http.get("/workouts/compare?ids=1").status_code == 400  # needs at least two
+        assert http.get("/workouts/compare?ids=1,999").status_code == 404
+        body = http.get("/workouts/compare?ids=1,2&points=50&segment_m=250").json()
+
+    assert body["reference_id"] == 1
+    assert len(body["pieces"]) == 2
+    reference, other = body["pieces"]
+    assert reference["is_reference"] and not other["is_reference"]
+    assert reference["total_delta_s"] == 0.0
+    assert other["total_delta_s"] > 0  # the slower piece lost time
+    assert len(reference["series"]["distance_m"]) == 50
+    # Every split before the slowdown is even; the loss shows up in the later ones.
+    deltas = [s["delta_s"] for s in other["splits"]]
+    assert deltas[0] == 0.0 and deltas[-1] > 0

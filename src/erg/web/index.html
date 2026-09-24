@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Race replay</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>Race replay</h1>
+  <p class="sub">Distance-aligned ghost racing from your own stroke data.</p>
+</header>
+
+<section class="picker">
+  <div class="row">
+    <label>Class
+      <select id="class-filter">
+        <option value="test_2k" selected>2k tests</option>
+        <option value="test_6k">6k tests</option>
+        <option value="test_10k">10k tests</option>
+        <option value="steady">steady</option>
+        <option value="interval">interval</option>
+        <option value="">all</option>
+      </select>
+    </label>
+    <span class="hint">Pick 2–6 pieces. The first selected is the reference.</span>
+    <button id="compare" disabled>Compare</button>
+  </div>
+  <ul id="workout-list" class="workouts"></ul>
+</section>
+
+<section id="results" hidden>
+  <div id="note" class="note" hidden></div>
+
+  <div class="panel">
+    <div class="race-head">
+      <h2>Ghost race</h2>
+      <div class="controls">
+        <button id="play">Play</button>
+        <input id="scrub" type="range" min="0" max="1000" value="0">
+        <select id="speed">
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+          <option value="4" selected>4x</option>
+          <option value="8">8x</option>
+        </select>
+        <span id="clock" class="clock">0:00.0</span>
+      </div>
+    </div>
+    <canvas id="race" height="220"></canvas>
+    <table id="live" class="live"></table>
+  </div>
+
+  <div class="panel">
+    <h2>Splits <span id="segment-label" class="muted"></span></h2>
+    <div class="scroll"><table id="splits"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>Pace <span class="muted">/500m, against distance</span></h2>
+    <canvas id="pace-chart" height="220"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Time gained or lost <span class="muted">against the reference</span></h2>
+    <canvas id="delta-chart" height="180"></canvas>
+  </div>
+
+  <div class="panel two">
+    <div>
+      <h2>Heart rate</h2>
+      <canvas id="hr-chart" height="180"></canvas>
+    </div>
+    <div>
+      <h2>Stroke length <span class="muted">metres per stroke</span></h2>
+      <canvas id="dps-chart" height="180"></canvas>
+    </div>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

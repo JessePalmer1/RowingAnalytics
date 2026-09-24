@@ -1,9 +1,11 @@
 import secrets
 from dataclasses import asdict
 from datetime import date as Date
+from pathlib import Path
 
 from fastapi import Body, Cookie, FastAPI, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 
 from erg.c2 import oauth
@@ -25,12 +27,24 @@ from erg.models import (
 from erg.services import client_for_athlete
 from erg.metrics_runner import ACUTE_DAYS, CHRONIC_DAYS
 from erg.pipeline import classify_all, effective_class, set_override
+from erg.compare import DEFAULT_POINTS, DEFAULT_SEGMENT_M, common_grid, resample, split_attribution, track_from_samples
+from erg.metrics import StrokePoint, work_samples
 from erg.strokes import downsample, with_elapsed
 from erg.summary import week_summary
 from erg.sync import backfill, fetch_strokes, upsert_athlete
 from erg.tokens import store_token
 
 app = FastAPI(title="Erg Analytics")
+
+WEB_DIR = Path(__file__).parent / "web"
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/replay", include_in_schema=False)
+def replay_ui():
+    """Race replay: distance-aligned ghost racing over your own pieces."""
+    return FileResponse(WEB_DIR / "index.html")
 
 STATE_COOKIE = "c2_oauth_state"
 
@@ -153,6 +167,91 @@ def get_strokes(
             ],
             "total_points": total,
             "points": points,
+        }
+
+
+@app.get("/workouts/compare")
+def compare_workouts(
+    ids: str = Query(..., description="comma-separated workout ids; the first is the reference"),
+    points: int = Query(DEFAULT_POINTS, ge=10, le=2000),
+    segment_m: float = Query(DEFAULT_SEGMENT_M, gt=0),
+):
+    """Distance-aligned series plus split attribution, ready to overlay."""
+    try:
+        workout_ids = [int(part) for part in ids.split(",") if part.strip()]
+    except ValueError:
+        raise HTTPException(400, "ids must be comma-separated integers") from None
+    if not 2 <= len(workout_ids) <= 6:
+        raise HTTPException(400, "compare between 2 and 6 workouts")
+
+    with session_scope() as s:
+        pieces, tracks = [], []
+        for workout_id in workout_ids:
+            w = s.get(Workout, workout_id)
+            if w is None:
+                raise HTTPException(404, f"workout {workout_id} not found")
+            strokes = s.execute(
+                select(Stroke).where(Stroke.workout_id == workout_id, Stroke.is_rest.is_(False)).order_by(Stroke.seq)
+            ).scalars().all()
+            if not strokes:
+                raise HTTPException(400, f"workout {workout_id} has no stroke data to compare")
+            samples = work_samples(
+                [
+                    StrokePoint(
+                        interval_idx=st.interval_idx,
+                        t_s=float(st.t_s),
+                        d_m=float(st.d_m),
+                        pace_s_500=float(st.pace_s_500) if st.pace_s_500 is not None else None,
+                        spm=st.spm,
+                        hr=st.hr,
+                    )
+                    for st in strokes
+                ]
+            )
+            cls, _ = effective_class(s, workout_id)
+            tracks.append(track_from_samples(samples))
+            pieces.append(
+                {
+                    "workout_id": w.id,
+                    "date": w.ended_at_local.date(),
+                    "class": cls,
+                    "work_distance_m": w.work_distance_m,
+                    "work_time_s": float(w.work_time_s),
+                    "avg_pace_s_500": float(w.avg_pace_s_500) if w.avg_pace_s_500 else None,
+                    "drag_factor": w.drag_factor,
+                    "hr_avg": w.hr_avg,
+                    "comments": w.comments,
+                }
+            )
+
+        grid = common_grid(tracks, points)
+        if not grid:
+            raise HTTPException(400, "no common distance to compare over")
+        aligned_distance = grid[-1]
+
+        reference = tracks[0]
+        for i, (piece, track) in enumerate(zip(pieces, tracks)):
+            piece["series"] = resample(track, grid)
+            piece["aligned_time_s"] = piece["series"]["time_s"][-1]
+            piece["is_reference"] = i == 0
+            piece["splits"] = split_attribution(reference, track, aligned_distance, segment_m)
+            piece["total_delta_s"] = (
+                None
+                if piece["aligned_time_s"] is None or pieces[0]["aligned_time_s"] is None
+                else round(piece["aligned_time_s"] - pieces[0]["aligned_time_s"], 2)
+            )
+
+        drags = {p["drag_factor"] for p in pieces if p["drag_factor"]}
+        return {
+            "aligned_distance_m": aligned_distance,
+            "segment_m": segment_m,
+            "reference_id": workout_ids[0],
+            "pieces": pieces,
+            "note": (
+                f"drag factor differs across these pieces ({sorted(drags)}); pace is not strictly comparable"
+                if len(drags) > 1
+                else None
+            ),
         }
 
 
