@@ -80,6 +80,7 @@ Measured on 104 sessions, Sept 2025 – Apr 2026:
 - `hr = 0` on every stroke when no strap → null.
 - **Per-stroke HR legitimately falls below 90** (warm-up start 63 bpm, rest recovery). The 90–210 band is for session averages only; per-stroke HR uses a wide physiological band (30–230).
 - `d` can overshoot the interval target distance (paddling through rest).
+- **The last stroke sample lands short of the finish.** Measured on the three 2k tests: the final stroke reads 1996.7–1997.7m and 383.1–386.9s where the logbook records 2000m and 383.9–387.4s — a 2–3m, 0.5–0.8s shortfall. The stroke stream alone therefore under-reports every piece's total. Anything reporting a total time or distance must anchor the end to the logbook summary (`compare.track_from_samples`), which is only safe when the summary is *ahead* of the strokes by a plausible margin (≤50m, ≤15s) — truncated summaries (above) are behind them.
 - Rest strokes are sparse (a few paddle strokes, ~1–2% of interval strokes overall) but carry HR through recovery (e.g. 163→155 bpm over a 20s rest).
 - **Logbook summaries can be truncated; strokes are more complete.** 5/113 workouts have more intervals in the stroke stream than in `raw.workout.intervals`, and the extra intervals are full-effort work, not artifacts. 3 of them have top-level `time = 0` and `distance = 0` (107312625, 107817599, 113079371); 2 have totals covering only the first interval (109930824, 113030068). That's ~23 km of rowing the summary under-reports. These carry a `stroke_warning`; strokes in the unsummarized intervals cannot be labelled work/rest. **Phase 4 consequence:** load aggregates and totals must reconstruct from strokes when `stroke_warning` is set or totals are zero, not trust the summary.
 
@@ -388,6 +389,8 @@ Implementation notes:
 ## 8. Downstream features (consumers of this layer)
 
 **Race replay UI** — **built 2026-09-24**, served at `/replay` by the same FastAPI app (`src/erg/web/`, vanilla JS + canvas, no build step and no CDN). Piece picker filtered by class, animated ghost race with scrub and speed control, live gap/pace/HR readout, per-segment split table, and pace / time-delta / HR / stroke-length charts. `/workouts/compare?ids=&points=&segment_m=` does the distance-aligned interpolation and split attribution server-side, and warns when drag factor differs across the selected pieces. Verified against the three 2k tests: the April piece lost 3.67s to December, 2.4s of it after 1000m.
+
+Totals are anchored to the logbook summary, so split tables and race times match the monitor exactly rather than ending 0.5–0.8s early on the last stroke sample (§1.7).
 
 Still to do here: shareable permalink with a server-rendered OG card.
 

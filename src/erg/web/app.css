@@ -113,7 +113,8 @@ th:first-child, td:first-child { text-align: left; }
 thead th { color: var(--muted); font-weight: 600; }
 tbody tr:last-child td { border-bottom: none; }
 
-.live td, .live th { border: none; padding: 4px 10px; }
+.live td { border: none; padding: 4px 10px; }
+.live th { border: none; padding: 8px 10px 2px; font-size: 12px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
 .loss { color: var(--loss); }
 .gain { color: var(--gain); }

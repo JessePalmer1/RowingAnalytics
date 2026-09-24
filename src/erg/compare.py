@@ -11,6 +11,14 @@ from erg.metrics import WorkSample
 DEFAULT_POINTS = 300
 DEFAULT_SEGMENT_M = 500
 
+# The monitor's last stroke sample lands a few metres before the piece actually ends
+# (measured: 2-3m and 0.5-0.8s short on 2k tests), so the stroke stream alone under-reports
+# the finish. The logbook total is authoritative and anchors the end of the track — but only
+# when it is ahead of the strokes by a plausible amount, since some summaries are truncated
+# and report less than was actually rowed (plan §1.7).
+MAX_ANCHOR_DISTANCE_M = 50.0
+MAX_ANCHOR_TIME_S = 15.0
+
 
 @dataclass(frozen=True)
 class Track:
@@ -22,9 +30,12 @@ class Track:
     hr: list[int | None]
     spm: list[int | None]
     dps_m: list[float | None]
+    anchored: bool = False  # end extended to the logbook total
 
 
-def track_from_samples(samples: list[WorkSample]) -> Track:
+def track_from_samples(
+    samples: list[WorkSample], total_distance_m: float | None = None, total_time_s: float | None = None
+) -> Track:
     distance, time, pace, hr, spm, dps = [0.0], [0.0], [None], [None], [None], [None]
     elapsed_t = 0.0
     for s in samples:
@@ -35,7 +46,23 @@ def track_from_samples(samples: list[WorkSample]) -> Track:
         hr.append(s.hr)
         spm.append(s.spm)
         dps.append(s.distance_m)
-    return Track(distance, time, pace, hr, spm, dps)
+
+    anchored = False
+    if total_distance_m and total_time_s and distance[-1] > 0:
+        extra_d = total_distance_m - distance[-1]
+        extra_t = total_time_s - time[-1]
+        if 0 < extra_d <= MAX_ANCHOR_DISTANCE_M and 0 < extra_t <= MAX_ANCHOR_TIME_S:
+            distance.append(float(total_distance_m))
+            time.append(float(total_time_s))
+            # Carry the last stroke's values: the run-in to the finish line has no sample
+            # of its own, and deriving a pace from the gap would invent a bogus number.
+            pace.append(pace[-1])
+            hr.append(hr[-1])
+            spm.append(spm[-1])
+            dps.append(dps[-1])
+            anchored = True
+
+    return Track(distance, time, pace, hr, spm, dps, anchored)
 
 
 def _interpolate(xs: list[float], ys: list[float | None], x: float) -> float | None:

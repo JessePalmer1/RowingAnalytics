@@ -1,4 +1,4 @@
-# RowingAnalytics
+/# RowingAnalytics
 experimenting with concept2 API for training data analytics projects
 
 See [erg-analytics-data-layer-plan.md](erg-analytics-data-layer-plan.md) for the full spec. **Current status: Phases 1-4 done** (ingest, strokes, classification + eligibility, metrics engine), plus the weekly summary and the race replay UI.
@@ -19,12 +19,18 @@ Register an app at https://log.concept2.com/developers/keys with redirect URI `h
 Double-click **`run.cmd`**, or from a terminal:
 
 ```powershell
-.un.cmd              # start everything and open the race replay UI
-.un.cmd -Sync        # pull new workouts from Concept2 first, then recompute
-.un.cmd -Recompute   # re-run classification + metrics before starting
-.un.cmd -NoBrowser   # don't open a browser
-.un.cmd -StopDb      # also stop Postgres when the server exits
-.un.cmd -Port 8001   # use a different port
+.
+un.cmd              # start everything and open the race replay UI
+.
+un.cmd -Sync        # pull new workouts from Concept2 first, then recompute
+.
+un.cmd -Recompute   # re-run classification + metrics before starting
+.
+un.cmd -NoBrowser   # don't open a browser
+.
+un.cmd -StopDb      # also stop Postgres when the server exits
+.
+un.cmd -Port 8001   # use a different port
 ```
 
 It starts Docker Desktop and Postgres if needed, applies migrations, launches the API and

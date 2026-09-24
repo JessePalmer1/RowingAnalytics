@@ -351,6 +351,7 @@ function renderLive() {
       const d = distanceAt(p, state.t);
       const behind = d - refD;
       const pace = valueAt(p, "pace_s_500", d);
+      const spm = valueAt(p, "spm", d);
       const hr = valueAt(p, "hr", d);
       const gap = p === reference ? "reference" : `${behind >= 0 ? "+" : ""}${behind.toFixed(1)}m`;
       const cls = p === reference ? "" : behind >= 0 ? "gain" : "loss";
@@ -358,12 +359,15 @@ function renderLive() {
         <td><span class="swatch" style="background:${p.color}"></span>${p.date}</td>
         <td>${d.toFixed(0)}m</td>
         <td>${pace ? mmss(pace) : "–"}</td>
+        <td>${spm ? Math.round(spm) + " spm" : "–"}</td>
         <td>${hr ? Math.round(hr) + " bpm" : "–"}</td>
         <td class="${cls}">${gap}</td>
       </tr>`;
     })
     .join("");
-  $("live").innerHTML = `<tbody>${rows}</tbody>`;
+  $("live").innerHTML = `<thead><tr>
+      <th>Piece</th><th>Distance</th><th>Pace</th><th>Rate</th><th>HR</th><th>Gap</th>
+    </tr></thead><tbody>${rows}</tbody>`;
 }
 
 function renderSplits() {

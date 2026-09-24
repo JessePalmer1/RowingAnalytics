@@ -209,7 +209,9 @@ def compare_workouts(
                 ]
             )
             cls, _ = effective_class(s, workout_id)
-            tracks.append(track_from_samples(samples))
+            tracks.append(
+                track_from_samples(samples, float(w.work_distance_m), float(w.work_time_s))
+            )
             pieces.append(
                 {
                     "workout_id": w.id,
@@ -234,6 +236,7 @@ def compare_workouts(
             piece["series"] = resample(track, grid)
             piece["aligned_time_s"] = piece["series"]["time_s"][-1]
             piece["is_reference"] = i == 0
+            piece["end_anchored"] = track.anchored
             piece["splits"] = split_attribution(reference, track, aligned_distance, segment_m)
             piece["total_delta_s"] = (
                 None
