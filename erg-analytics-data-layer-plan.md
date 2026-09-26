@@ -343,6 +343,8 @@ Baseline = rolling median + MAD of EF, HR-at-pace, and DPS over the trailing N e
 
 ## 6. Query API surface
 
+All data endpoints resolve the athlete from a **signed session cookie** (`erg_session`, itsdangerous, 30 days), never from the URL. Someone else's workout id returns 404 rather than 403, so ids do not leak. `/auth/callback` issues the session; `/auth/logout` clears it.
+
 ```
 GET  /athletes/me
 GET  /workouts?from&to&type&class&eligible_steady
@@ -356,6 +358,7 @@ GET  /load/acwr?date
 GET  /summary/week?date                 # digest payload
 GET  /challenges/progress               # joins public C2 challenges to your meters
 POST /workouts/{id}/classification      # manual override
+POST /auth/logout
 ```
 
 `/workouts/compare` doing **distance-aligned interpolation server-side** is what makes ghost racing trivial on the frontend — resample each piece onto a common distance grid and return aligned arrays.
@@ -382,7 +385,7 @@ Implementation notes:
 
 **Phase 5 — Webhooks + live sync.** Webhook endpoint, verification, job enqueue, nightly reconciliation poll.
 
-**Phase 6 — Query API + first frontend.** Query surface built: `/workouts`, `/workouts/{id}`, `/workouts/{id}/strokes`, `/workouts/compare`, `/metrics/trend`, `/load/daily`, `/load/acwr`, `/summary/week`. First frontend built: the race replay UI at `/replay` (see §8).
+**Phase 6 — Query API + first frontend.** Sessions and per-athlete scoping built 2026-09-26 (see §6). Query surface built: `/workouts`, `/workouts/{id}`, `/workouts/{id}/strokes`, `/workouts/compare`, `/metrics/trend`, `/load/daily`, `/load/acwr`, `/summary/week`. First frontend built: the race replay UI at `/replay` (see §8).
 
 ---
 

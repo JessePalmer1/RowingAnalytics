@@ -17,10 +17,27 @@ const mmss = (s, decimals = 1) => {
 
 const signed = (s) => (s === null || s === undefined ? "–" : `${s > 0 ? "+" : ""}${s.toFixed(2)}s`);
 
+async function api(path) {
+  const res = await fetch(path);
+  if (res.status === 401) {
+    showSignIn();
+    return null;
+  }
+  if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+  return res.json();
+}
+
+function showSignIn() {
+  $("picker").hidden = true;
+  $("results").hidden = true;
+  $("signin").hidden = false;
+}
+
 async function loadWorkouts() {
   const cls = $("class-filter").value;
   const query = cls ? `?class=${encodeURIComponent(cls)}&limit=100` : "?limit=100";
-  const rows = await (await fetch(`/workouts${query}`)).json();
+  const rows = await api(`/workouts${query}`);
+  if (rows === null) return;
   state.workouts = rows;
   state.selected = [];
   renderList();
@@ -69,12 +86,9 @@ function syncButton() {
 }
 
 async function compare() {
-  const res = await fetch(`/workouts/compare?ids=${state.selected.join(",")}`);
-  if (!res.ok) {
-    alert((await res.json()).detail || "Comparison failed");
-    return;
-  }
-  state.data = await res.json();
+  const data = await api(`/workouts/compare?ids=${state.selected.join(",")}`);
+  if (data === null) return;
+  state.data = data;
   state.data.pieces.forEach((p, i) => (p.color = COLORS[i % COLORS.length]));
   state.t = 0;
   stop();
@@ -443,4 +457,11 @@ $("scrub").addEventListener("input", (e) => {
 });
 window.addEventListener("resize", () => state.data && drawAll());
 
-loadWorkouts();
+async function start() {
+  const me = await api("/athletes/me");
+  if (me === null) return;
+  $("who").textContent = me.username ? `${me.username} · ${me.workouts} workouts` : `${me.workouts} workouts`;
+  await loadWorkouts();
+}
+
+start();

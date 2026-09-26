@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     c2_burst: int = 5
 
     database_url: str = "postgresql+psycopg://erg:erg@localhost:5432/erg"
+
+    # Session cookies. Falls back to the token key so local setups need no extra config;
+    # set SECURE_COOKIES=true once the app is served over HTTPS.
+    session_secret: str = ""
+    session_days: int = 30
+    secure_cookies: bool = False
     token_encryption_key: str = ""
     default_timezone: str = "America/New_York"
 

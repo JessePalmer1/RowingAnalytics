@@ -42,6 +42,7 @@ Ctrl+C stops the server; Postgres keeps running unless `-StopDb` is passed.
 ```sh
 uv run uvicorn erg.api:app --reload  # race replay UI: http://localhost:8000/replay
                                      # first run: http://localhost:8000/auth/login
+                                     # all data endpoints need a session: /auth/login first
                                      # GET /workouts?class=steady&eligible_for=ef
                                      # GET /metrics/trend?name=ef&class=steady
                                      # GET /load/daily?from=2026-09-01   GET /load/acwr
@@ -71,6 +72,7 @@ uv run pytest                        # DB tests skip if Postgres isn't running
 - `src/erg/c2/` — Concept2 client: OAuth, rate-limited/retrying API access, pagination
 - `src/erg/normalize.py` — raw C2 units/timezones → normalized values (the only place raw units exist)
 - `src/erg/tokens.py` — encrypted token storage; refresh with rotation under a row lock
+- `src/erg/session.py` — signed session cookie; every data endpoint resolves the athlete from it
 - `src/erg/sync.py` — idempotent athlete/workout upserts, backfill, stroke fetch queue
 - `src/erg/strokes.py` — interval-aware stroke parsing (work/rest labels), elapsed offsets, LTTB downsampling
 - `src/erg/classify.py` — session classification (test_2k/6k/10k, interval, steady, short_piece) with confidence

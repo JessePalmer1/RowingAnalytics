@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.13",
     "pydantic-settings>=2.4",
     "cryptography>=43",
+    "itsdangerous>=2.2",
     "tzdata>=2024.1",
 ]
 

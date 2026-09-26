@@ -3,8 +3,8 @@ from dataclasses import asdict
 from datetime import date as Date
 from pathlib import Path
 
-from fastapi import Body, Cookie, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 
@@ -32,6 +32,7 @@ from erg.metrics import StrokePoint, work_samples
 from erg.strokes import downsample, with_elapsed
 from erg.summary import week_summary
 from erg.sync import backfill, fetch_strokes, upsert_athlete
+from erg.session import clear as clear_session, current_athlete, issue as issue_session
 from erg.tokens import store_token
 
 app = FastAPI(title="Erg Analytics")
@@ -82,27 +83,38 @@ def callback(
         athlete_id = upsert_athlete(s, me)
         store_token(s, athlete_id, token)
 
-    resp = RedirectResponse(f"/athletes/{athlete_id}")
+    resp = RedirectResponse("/replay")
     resp.delete_cookie(STATE_COOKIE)
+    issue_session(resp, athlete_id, settings)
     return resp
 
 
-@app.get("/athletes/{athlete_id}")
-def get_athlete(athlete_id: int):
+@app.post("/auth/logout")
+def logout():
+    resp = JSONResponse({"signed_out": True})
+    clear_session(resp)
+    return resp
+
+
+@app.get("/athletes/me")
+def get_athlete(athlete_id: int = Depends(current_athlete)):
     with session_scope() as s:
-        athlete = s.execute(select(Athlete).where(Athlete.id == athlete_id)).scalar_one_or_none()
+        athlete = s.get(Athlete, athlete_id)
         if athlete is None:
             raise HTTPException(404, "athlete not found")
         return {
             "id": athlete.id,
             "username": athlete.username,
-            "max_heart_rate": athlete.max_heart_rate,
-            "weight_g": athlete.weight_g,
+            "max_heart_rate": athlete.effective_max_heart_rate,
+            "weight_g": athlete.effective_weight_g,
+            "workouts": s.execute(
+                select(func.count()).select_from(Workout).where(Workout.athlete_id == athlete_id)
+            ).scalar(),
         }
 
 
-@app.post("/athletes/{athlete_id}/backfill")
-def run_backfill(athlete_id: int):
+@app.post("/athletes/me/backfill")
+def run_backfill(athlete_id: int = Depends(current_athlete)):
     settings = get_settings()
     client = client_for_athlete(settings, athlete_id)
     try:
@@ -113,8 +125,8 @@ def run_backfill(athlete_id: int):
     return asdict(stats)
 
 
-@app.post("/athletes/{athlete_id}/strokes/fetch")
-def run_stroke_fetch(athlete_id: int, limit: int | None = None):
+@app.post("/athletes/me/strokes/fetch")
+def run_stroke_fetch(limit: int | None = None, athlete_id: int = Depends(current_athlete)):
     settings = get_settings()
     client = client_for_athlete(settings, athlete_id)
     try:
@@ -125,16 +137,23 @@ def run_stroke_fetch(athlete_id: int, limit: int | None = None):
     return asdict(stats)
 
 
+def owned_workout(s, workout_id: int, athlete_id: int) -> Workout:
+    """A workout the signed-in athlete owns. Someone else's id reads as missing."""
+    workout = s.get(Workout, workout_id)
+    if workout is None or workout.athlete_id != athlete_id:
+        raise HTTPException(404, "workout not found")
+    return workout
+
+
 @app.get("/workouts/{workout_id}/strokes")
 def get_strokes(
     workout_id: int,
     downsample_to: int | None = Query(None, alias="downsample", ge=3, description="max points (LTTB on time vs pace)"),
     include_rest: bool = True,
+    athlete_id: int = Depends(current_athlete),
 ):
     with session_scope() as s:
-        workout = s.get(Workout, workout_id)
-        if workout is None:
-            raise HTTPException(404, "workout not found")
+        workout = owned_workout(s, workout_id, athlete_id)
         strokes = s.execute(select(Stroke).where(Stroke.workout_id == workout_id).order_by(Stroke.seq)).scalars().all()
         intervals = s.execute(
             select(IntervalSplit).where(IntervalSplit.workout_id == workout_id).order_by(IntervalSplit.idx)
@@ -175,6 +194,7 @@ def compare_workouts(
     ids: str = Query(..., description="comma-separated workout ids; the first is the reference"),
     points: int = Query(DEFAULT_POINTS, ge=10, le=2000),
     segment_m: float = Query(DEFAULT_SEGMENT_M, gt=0),
+    athlete_id: int = Depends(current_athlete),
 ):
     """Distance-aligned series plus split attribution, ready to overlay."""
     try:
@@ -187,9 +207,7 @@ def compare_workouts(
     with session_scope() as s:
         pieces, tracks = [], []
         for workout_id in workout_ids:
-            w = s.get(Workout, workout_id)
-            if w is None:
-                raise HTTPException(404, f"workout {workout_id} not found")
+            w = owned_workout(s, workout_id, athlete_id)
             strokes = s.execute(
                 select(Stroke).where(Stroke.workout_id == workout_id, Stroke.is_rest.is_(False)).order_by(Stroke.seq)
             ).scalars().all()
@@ -259,11 +277,9 @@ def compare_workouts(
 
 
 @app.get("/workouts/{workout_id}")
-def get_workout(workout_id: int):
+def get_workout(workout_id: int, athlete_id: int = Depends(current_athlete)):
     with session_scope() as s:
-        w = s.get(Workout, workout_id)
-        if w is None:
-            raise HTTPException(404, "workout not found")
+        w = owned_workout(s, workout_id, athlete_id)
         cls, overridden = effective_class(s, workout_id)
         classification = s.get(WorkoutClassification, workout_id)
         eligibility = s.execute(
@@ -327,14 +343,17 @@ def _metrics_dict(m) -> dict | None:
 
 
 @app.post("/workouts/{workout_id}/classification")
-def override_classification(workout_id: int, workout_class: str = Body(embed=True), note: str | None = Body(None, embed=True)):
+def override_classification(
+    workout_id: int,
+    workout_class: str = Body(embed=True),
+    note: str | None = Body(None, embed=True),
+    athlete_id: int = Depends(current_athlete),
+):
     """Manual override. Always wins over the classifier and survives recomputation."""
     with session_scope() as s:
-        w = s.get(Workout, workout_id)
-        if w is None:
-            raise HTTPException(404, "workout not found")
+        owned_workout(s, workout_id, athlete_id)
         set_override(s, workout_id, workout_class, note)
-        classify_all(s, w.athlete_id)  # refresh eligibility, which depends on class
+        classify_all(s, athlete_id)  # refresh eligibility, which depends on class
         cls, _ = effective_class(s, workout_id)
     return {"workout_id": workout_id, "class": cls, "overridden": True}
 
@@ -344,6 +363,7 @@ def list_workouts(
     workout_class: str | None = Query(None, alias="class"),
     eligible_for: str | None = Query(None, description="metric name, e.g. ef or decoupling"),
     limit: int = Query(50, le=250),
+    athlete_id: int = Depends(current_athlete),
 ):
     with session_scope() as s:
         # Manual overrides win over the classifier, so filter on the effective class.
@@ -352,6 +372,7 @@ def list_workouts(
             select(Workout, WorkoutClassification, effective.label("effective_class"))
             .join(WorkoutClassification, WorkoutClassification.workout_id == Workout.id, isouter=True)
             .join(ClassificationOverride, ClassificationOverride.workout_id == Workout.id, isouter=True)
+            .where(Workout.athlete_id == athlete_id)
         )
         if workout_class:
             q = q.where(effective == workout_class)
@@ -395,6 +416,7 @@ def metric_trend(
     from_: Date | None = Query(None, alias="from"),
     to: Date | None = None,
     hrr_rest_s: float | None = Query(None, description="HRR only compares at matched rest length"),
+    athlete_id: int = Depends(current_athlete),
 ):
     """One point per eligible workout. No smoothing: the caller decides how to present it."""
     column = METRIC_COLUMNS.get(name)
@@ -408,7 +430,7 @@ def metric_trend(
             .join(WorkoutMetric, WorkoutMetric.workout_id == Workout.id)
             .join(WorkoutClassification, WorkoutClassification.workout_id == Workout.id, isouter=True)
             .join(ClassificationOverride, ClassificationOverride.workout_id == Workout.id, isouter=True)
-            .where(column.is_not(None))
+            .where(column.is_not(None), Workout.athlete_id == athlete_id)
             .order_by(Workout.ended_at_local)
         )
         if workout_class:
@@ -438,9 +460,13 @@ def metric_trend(
 
 
 @app.get("/load/daily")
-def load_daily(from_: Date | None = Query(None, alias="from"), to: Date | None = None):
+def load_daily(
+    from_: Date | None = Query(None, alias="from"),
+    to: Date | None = None,
+    athlete_id: int = Depends(current_athlete),
+):
     with session_scope() as s:
-        q = select(DailyLoad).order_by(DailyLoad.date)
+        q = select(DailyLoad).where(DailyLoad.athlete_id == athlete_id).order_by(DailyLoad.date)
         if from_:
             q = q.where(DailyLoad.date >= from_)
         if to:
@@ -459,14 +485,18 @@ def load_daily(from_: Date | None = Query(None, alias="from"), to: Date | None =
 
 
 @app.get("/load/acwr")
-def load_acwr(date: Date | None = None):
+def load_acwr(date: Date | None = None, athlete_id: int = Depends(current_athlete)):
     """Acute:chronic workload ratio — a descriptive load-balance indicator, not advice."""
     with session_scope() as s:
-        q = select(RollingMetric).where(RollingMetric.metric_name.in_(["acwr", "kj", "monotony"]))
+        q = select(RollingMetric).where(
+            RollingMetric.athlete_id == athlete_id, RollingMetric.metric_name.in_(["acwr", "kj", "monotony"])
+        )
         if date:
             q = q.where(RollingMetric.date == date)
         else:
-            latest = s.execute(select(func.max(RollingMetric.date))).scalar()
+            latest = s.execute(
+                select(func.max(RollingMetric.date)).where(RollingMetric.athlete_id == athlete_id)
+            ).scalar()
             if latest is None:
                 return {}
             q = q.where(RollingMetric.date == latest)
@@ -481,11 +511,7 @@ def load_acwr(date: Date | None = None):
 
 
 @app.get("/summary/week")
-def summary_week(athlete_id: int | None = None, date: Date | None = None):
+def summary_week(date: Date | None = None, athlete_id: int = Depends(current_athlete)):
     """Digest payload for one Monday-Sunday week. Descriptive only, no recommendations."""
     with session_scope() as s:
-        if athlete_id is None:
-            athlete_id = s.execute(select(Athlete.id).order_by(Athlete.id).limit(1)).scalar()
-            if athlete_id is None:
-                raise HTTPException(404, "no athlete in the database")
         return week_summary(s, athlete_id, date)

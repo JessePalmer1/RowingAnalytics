@@ -297,6 +297,9 @@ def test_compare_endpoint(db, settings):
     fetch_strokes(db, client, 42)
 
     with TestClient(api.app) as http:
+        from test_session import sign_in
+
+        sign_in(http, 42)
         assert http.get("/workouts/compare?ids=1").status_code == 400  # needs at least two
         assert http.get("/workouts/compare?ids=1,999").status_code == 404
         body = http.get("/workouts/compare?ids=1,2&points=50&segment_m=250").json()
