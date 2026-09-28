@@ -28,6 +28,7 @@ from erg.models import (
 from erg.services import client_for_athlete
 from erg.metrics_runner import ACUTE_DAYS, CHRONIC_DAYS
 from erg.classify import CLASSES
+from erg.describe import describe_workout
 from erg.pipeline import (
     clear_override,
     effective_class,
@@ -48,6 +49,16 @@ app = FastAPI(title="Erg Analytics")
 
 WEB_DIR = Path(__file__).parent / "web"
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """Browsers otherwise keep serving an old app.js after an update. no-cache still uses the
+    ETag, so an unchanged file costs a 304, not a download."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") or request.url.path in ("/", "/replay"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/", include_in_schema=False)
@@ -144,6 +155,21 @@ def run_stroke_fetch(limit: int | None = None, athlete_id: int = Depends(current
     finally:
         client.close()
     return asdict(stats)
+
+
+def stroke_interval_counts(s, workouts) -> dict[int, int]:
+    """Intervals seen in the stroke stream, only for workouts whose summary is truncated
+    (those carry a stroke_warning). Everyone else's summary is complete, so skip the query."""
+    warned = [w.id for w in workouts if w.stroke_warning]
+    if not warned:
+        return {}
+    return dict(
+        s.execute(
+            select(Stroke.workout_id, func.max(Stroke.interval_idx) + 1)
+            .where(Stroke.workout_id.in_(warned))
+            .group_by(Stroke.workout_id)
+        ).all()
+    )
 
 
 def owned_workout(s, workout_id: int, athlete_id: int) -> Workout:
@@ -244,6 +270,7 @@ def compare_workouts(
                     "workout_id": w.id,
                     "date": w.ended_at_local.date(),
                     "class": cls,
+                    "description": describe_workout(w, stroke_interval_counts(s, [w]).get(w.id)),
                     "work_distance_m": w.work_distance_m,
                     "work_time_s": float(w.work_time_s),
                     "avg_pace_s_500": float(w.avg_pace_s_500) if w.avg_pace_s_500 else None,
@@ -299,6 +326,7 @@ def get_workout(workout_id: int, athlete_id: int = Depends(current_athlete)):
             "ended_at_local": w.ended_at_local,
             "ended_at_utc": w.ended_at_utc,
             "workout_type": w.workout_type,
+            "description": describe_workout(w, stroke_interval_counts(s, [w]).get(w.id)),
             "work_time_s": float(w.work_time_s),
             "work_distance_m": w.work_distance_m,
             "rest_time_s": float(w.rest_time_s),
@@ -455,6 +483,7 @@ def list_workouts(
                 (WorkoutEligibility.workout_id == Workout.id) & (WorkoutEligibility.metric == eligible_for),
             ).where(WorkoutEligibility.eligible)
         rows = s.execute(q.order_by(Workout.ended_at_utc.desc()).limit(limit)).all()
+        stroke_counts = stroke_interval_counts(s, [row[0] for row in rows])
         return [
             {
                 "id": w.id,
@@ -468,6 +497,7 @@ def list_workouts(
                 "overridden": override_class is not None,
                 "override_note": override_note,
                 "workout_type": w.workout_type,
+                "description": describe_workout(w, stroke_counts.get(w.id)),
                 "work_distance_m": w.work_distance_m,
                 "work_time_s": float(w.work_time_s),
                 "rest_time_s": float(w.rest_time_s),

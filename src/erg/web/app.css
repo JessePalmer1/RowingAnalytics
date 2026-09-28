@@ -178,3 +178,10 @@ button.link {
   font-size: 11px;
   font-weight: 600;
 }
+
+/* ---- workout descriptions ------------------------------------------------ */
+.workouts .piece { display: flex; flex-direction: column; }
+.workouts .desc { font-size: 13px; }
+.pieces .workout { min-width: 180px; }
+.pieces .workout .desc { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.pieces .workout .shape { font-size: 12px; }

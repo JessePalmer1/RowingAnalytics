@@ -19,18 +19,12 @@ Register an app at https://log.concept2.com/developers/keys with redirect URI `h
 Double-click **`run.cmd`**, or from a terminal:
 
 ```powershell
-.
-un.cmd              # start everything and open the race replay UI
-.
-un.cmd -Sync        # pull new workouts from Concept2 first, then recompute
-.
-un.cmd -Recompute   # re-run classification + metrics before starting
-.
-un.cmd -NoBrowser   # don't open a browser
-.
-un.cmd -StopDb      # also stop Postgres when the server exits
-.
-un.cmd -Port 8001   # use a different port
+.\run.cmd              # start everything and open the race replay UI
+.\run.cmd -Sync        # pull new workouts from Concept2 first, then recompute
+.\run.cmd -Recompute   # re-run classification + metrics before starting
+.\run.cmd -NoBrowser   # don't open a browser
+.\run.cmd -StopDb      # also stop Postgres when the server exits
+.\run.cmd -Port 8001   # use a different port
 ```
 
 It starts Docker Desktop and Postgres if needed, applies migrations, launches the API and
@@ -77,6 +71,7 @@ uv run pytest                        # DB tests skip if Postgres isn't running
 - `src/erg/session.py` — signed session cookie; every data endpoint resolves the athlete from it
 - `src/erg/sync.py` — idempotent athlete/workout upserts, backfill, stroke fetch queue
 - `src/erg/strokes.py` — interval-aware stroke parsing (work/rest labels), elapsed offsets, LTTB downsampling
+- `src/erg/describe.py` — workout descriptions in rowing notation (3x20' / 2'r, 5k-4k-3k-2k-1k, 3x(10x1' / 30"r) / 2'r)
 - `src/erg/classify.py` — session classification: solo 2k/6k/10k are tests; otherwise interval vs steady against a learned per-athlete steady pace
 - `src/erg/eligibility.py` — per-metric eligibility rules, each with a reason when ineligible
 - `src/erg/pipeline.py` — runs classification + eligibility over stored workouts; manual overrides

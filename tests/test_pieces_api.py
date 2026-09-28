@@ -16,12 +16,12 @@ from test_session import sign_in
 STEADY_PACES = [118, 120, 122, 124, 126, 128]
 
 
-def solo(workout_id: int, day: int, distance: int, pace_s_500: float):
+def solo(workout_id: int, day: int, distance: int, pace_s_500: float, workout_type: str = "FixedTimeSplits"):
     return result_payload(
         id=workout_id,
         date=f"2026-03-{day:02d} 07:00:00",
         date_utc=f"2026-03-{day:02d} 12:00:00",
-        workout_type="FixedTimeSplits",
+        workout_type=workout_type,
         distance=distance,
         time=round(distance / 500 * pace_s_500 * 10),
     )
@@ -30,7 +30,7 @@ def solo(workout_id: int, day: int, distance: int, pace_s_500: float):
 def load(db, settings):
     rows = [solo(i + 1, i + 1, 7000 + i * 37, pace) for i, pace in enumerate(STEADY_PACES)]
     rows.append(solo(20, 20, 5000, 110))  # solo 5k at 1:50: interval work for this athlete
-    rows.append(solo(21, 21, 2000, 125))  # solo 2k at 2:05: a test, whatever the pace
+    rows.append(solo(21, 21, 2000, 125, "FixedDistanceSplits"))  # solo 2k at 2:05: a test, whatever the pace
     fake_c2(rows)
     client = C2Client(settings, lambda: "tok", http=httpx.Client(), limiter=NoLimit())
     backfill(db, client, settings)
@@ -66,6 +66,7 @@ def test_override_and_reset(db, settings):
         listed = {w["id"]: w for w in http.get("/workouts?limit=1000").json()}
         assert listed[21]["class"] == "steady" and listed[21]["classifier_class"] == "test_2k"
         assert listed[21]["override_note"] == "easy 2k"
+        assert listed[21]["description"] == "2k"  # what the piece was, not just a total
 
         reset = http.delete("/workouts/21/classification").json()
         assert reset == {"workout_id": 21, "class": "test_2k", "overridden": False, "reclassified": [21]}

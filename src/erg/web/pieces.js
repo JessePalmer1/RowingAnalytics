@@ -105,8 +105,8 @@ async function submitSettings(body) {
 // ---- table ----------------------------------------------------------------
 
 function pieceShape(p) {
-  const type = (p.workout_type || "").replace(/([a-z])([A-Z])/g, "$1 $2");
-  return p.rest_time_s > 0 ? `intervals · ${type}` : `solo · ${type}`;
+  // The description already says whether it was intervals; this is just the monitor's label.
+  return (p.workout_type || "").replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
 function renderPieces() {
@@ -133,7 +133,7 @@ function renderPieces() {
       const classes = [p.overridden ? "manual" : "", pieces.highlight.has(p.id) ? "changed" : ""].join(" ");
       return `<tr class="${classes}" data-id="${p.id}">
         <td>${escapeHtml(p.date)}</td>
-        <td class="shape">${escapeHtml(pieceShape(p))}</td>
+        <td class="workout"><div class="desc">${escapeHtml(p.description || "")}</div><div class="shape">${escapeHtml(pieceShape(p))}</div></td>
         <td>${(p.work_distance_m / 1000).toFixed(2)}km</td>
         <td>${duration(p.work_time_s)}</td>
         <td>${p.avg_pace_s_500 ? mmss(p.avg_pace_s_500) : "–"}</td>

@@ -399,7 +399,7 @@ Implementation notes:
 
 **Race replay UI** — **built 2026-09-24**, served at `/replay` by the same FastAPI app (`src/erg/web/`, vanilla JS + canvas, no build step and no CDN). Piece picker filtered by class, animated ghost race with scrub and speed control, live gap/pace/HR readout, per-segment split table, and pace / time-delta / HR / stroke-length charts. `/workouts/compare?ids=&points=&segment_m=` does the distance-aligned interpolation and split attribution server-side, and warns when drag factor differs across the selected pieces. Verified against the three 2k tests: the April piece lost 3.67s to December, 2.4s of it after 1000m.
 
-The UI has two tabs: **Race replay** and **Pieces**. Pieces lists every workout with its class as a dropdown (manual override, with reset), the classifier's reason, and the classification settings (steady pace, margin, threshold).
+The UI has two tabs: **Race replay** and **Pieces**. Every piece is labelled with what it was, in rowing notation, built from the per-interval summary (`describe.py`): `3x20' / 2'r`, `5k-4k-3k-2k-1k / 1'30"-3'r`, `3x(10x1' / 30"r) / 2'r` for sets, `~` before a rest that varied (ErgData logs the rest actually taken), and truncated summaries rebuilt from stroke counts where the workout type fixes the rep (`2x4k / 3'r (1 rep from strokes)`). Static assets are served with `Cache-Control: no-cache` so an update is picked up on the next load. Pieces lists every workout with its class as a dropdown (manual override, with reset), the classifier's reason, and the classification settings (steady pace, margin, threshold).
 
 Totals are anchored to the logbook summary, so split tables and race times match the monitor exactly rather than ending 0.5–0.8s early on the last stroke sample (§1.7).
 

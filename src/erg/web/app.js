@@ -15,6 +15,9 @@ const mmss = (s, decimals = 1) => {
   return `${sign}${m}:${(abs % 60).toFixed(decimals).padStart(decimals ? 3 + decimals : 2, "0")}`;
 };
 
+const escapeText = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
 const signed = (s) => (s === null || s === undefined ? "–" : `${s > 0 ? "+" : ""}${s.toFixed(2)}s`);
 
 // Shared with pieces.js. Returns null (after showing sign-in) when the session is gone.
@@ -93,7 +96,7 @@ function renderList() {
     // The input stays outside the label: nesting it makes a direct click toggle twice.
     li.innerHTML = `<input type="checkbox" id="w${w.id}" value="${w.id}">
       <label for="w${w.id}">
-        <span class="date">${w.date}</span>
+        <span class="piece"><span class="date">${w.date}</span><span class="desc">${escapeText(w.description || "")}</span></span>
         <span class="meta">${(w.work_distance_m / 1000).toFixed(2)}km · ${pace}${w.hr_avg ? ` · ${w.hr_avg}bpm` : ""}</span>
       </label>`;
     li.querySelector("input").addEventListener("change", (e) => toggle(Number(e.target.value), e.target));
@@ -393,7 +396,7 @@ function drawRace() {
     ctx.fillStyle = "#1b1b1a";
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
-    ctx.fillText(piece.date, x(0), laneY - 10);
+    ctx.fillText(piece.description ? `${piece.date} · ${piece.description}` : piece.date, x(0), laneY - 10);
   });
 
   $("clock").textContent = mmss(state.t);
