@@ -1,6 +1,7 @@
 import secrets
 from dataclasses import asdict
 from datetime import date as Date
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query
@@ -26,7 +27,15 @@ from erg.models import (
 )
 from erg.services import client_for_athlete
 from erg.metrics_runner import ACUTE_DAYS, CHRONIC_DAYS
-from erg.pipeline import classify_all, effective_class, set_override
+from erg.classify import CLASSES
+from erg.pipeline import (
+    clear_override,
+    effective_class,
+    effective_classes,
+    reclassify_and_refresh,
+    set_classification_settings,
+    set_override,
+)
 from erg.compare import DEFAULT_POINTS, DEFAULT_SEGMENT_M, common_grid, resample, split_attribution, track_from_samples
 from erg.metrics import StrokePoint, work_samples
 from erg.strokes import downsample, with_elapsed
@@ -350,26 +359,90 @@ def override_classification(
     athlete_id: int = Depends(current_athlete),
 ):
     """Manual override. Always wins over the classifier and survives recomputation."""
+    if workout_class not in CLASSES:
+        raise HTTPException(422, f"workout_class must be one of {', '.join(CLASSES)}")
     with session_scope() as s:
         owned_workout(s, workout_id, athlete_id)
+        before = effective_classes(s, athlete_id)
         set_override(s, workout_id, workout_class, note)
-        classify_all(s, athlete_id)  # refresh eligibility, which depends on class
-        cls, _ = effective_class(s, workout_id)
-    return {"workout_id": workout_id, "class": cls, "overridden": True}
+        _, changed = reclassify_and_refresh(s, athlete_id, before)
+        cls, overridden = effective_class(s, workout_id)
+    return {"workout_id": workout_id, "class": cls, "overridden": overridden, "reclassified": changed}
+
+
+@app.delete("/workouts/{workout_id}/classification")
+def clear_classification(workout_id: int, athlete_id: int = Depends(current_athlete)):
+    """Remove a manual override and hand the piece back to the classifier."""
+    with session_scope() as s:
+        owned_workout(s, workout_id, athlete_id)
+        before = effective_classes(s, athlete_id)
+        clear_override(s, workout_id)
+        _, changed = reclassify_and_refresh(s, athlete_id, before)
+        cls, overridden = effective_class(s, workout_id)
+    return {"workout_id": workout_id, "class": cls, "overridden": overridden, "reclassified": changed}
+
+
+def _settings_payload(athlete: Athlete) -> dict:
+    as_float = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "steady_pace_auto": as_float(athlete.steady_pace_auto),
+        "steady_pace_override": as_float(athlete.steady_pace_override),
+        "steady_pace": as_float(athlete.effective_steady_pace),
+        "interval_margin_s": as_float(athlete.interval_margin_s),
+        "interval_threshold": as_float(athlete.interval_threshold),
+        "classes": list(CLASSES),
+    }
+
+
+@app.get("/athletes/me/settings")
+def get_settings_endpoint(athlete_id: int = Depends(current_athlete)):
+    with session_scope() as s:
+        return _settings_payload(s.get(Athlete, athlete_id))
+
+
+@app.put("/athletes/me/settings")
+def update_settings(
+    steady_pace_s_500: float | None = Body(None, embed=True, description="null or omitted: keep; use auto=true to clear"),
+    auto: bool = Body(False, embed=True, description="go back to the learned steady pace"),
+    interval_margin_s: float | None = Body(None, embed=True),
+    athlete_id: int = Depends(current_athlete),
+):
+    """Change classification settings, then reclassify and recompute everything."""
+    with session_scope() as s:
+        before = effective_classes(s, athlete_id)
+        try:
+            set_classification_settings(
+                s,
+                athlete_id,
+                Decimal(str(steady_pace_s_500)) if steady_pace_s_500 is not None else None,
+                Decimal(str(interval_margin_s)) if interval_margin_s is not None else None,
+                clear_steady_pace=auto,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        stats, changed = reclassify_and_refresh(s, athlete_id, before, full_metrics=True)
+        payload = _settings_payload(s.get(Athlete, athlete_id))
+    return payload | {"classes_count": dict(stats.classes), "reclassified": changed}
 
 
 @app.get("/workouts")
 def list_workouts(
     workout_class: str | None = Query(None, alias="class"),
     eligible_for: str | None = Query(None, description="metric name, e.g. ef or decoupling"),
-    limit: int = Query(50, le=250),
+    limit: int = Query(50, le=1000),
     athlete_id: int = Depends(current_athlete),
 ):
     with session_scope() as s:
         # Manual overrides win over the classifier, so filter on the effective class.
         effective = func.coalesce(ClassificationOverride.workout_class, WorkoutClassification.workout_class)
         q = (
-            select(Workout, WorkoutClassification, effective.label("effective_class"))
+            select(
+                Workout,
+                WorkoutClassification,
+                effective.label("effective_class"),
+                ClassificationOverride.workout_class.label("override_class"),
+                ClassificationOverride.note.label("override_note"),
+            )
             .join(WorkoutClassification, WorkoutClassification.workout_id == Workout.id, isouter=True)
             .join(ClassificationOverride, ClassificationOverride.workout_id == Workout.id, isouter=True)
             .where(Workout.athlete_id == athlete_id)
@@ -387,14 +460,23 @@ def list_workouts(
                 "id": w.id,
                 "date": w.ended_at_local.date(),
                 "class": eff,
+                "classifier_class": c.workout_class if c else None,
+                "classifier_reason": c.reason if c else None,
                 "confidence": float(c.confidence) if c else None,
-                "overridden": eff != (c.workout_class if c else None),
+                # Presence of an override row, not a class comparison: an override can
+                # agree with the classifier and still be the athlete's decision.
+                "overridden": override_class is not None,
+                "override_note": override_note,
+                "workout_type": w.workout_type,
                 "work_distance_m": w.work_distance_m,
                 "work_time_s": float(w.work_time_s),
+                "rest_time_s": float(w.rest_time_s),
                 "avg_pace_s_500": float(w.avg_pace_s_500) if w.avg_pace_s_500 else None,
+                "avg_spm": w.avg_spm,
                 "hr_avg": w.hr_avg,
+                "has_strokes": w.has_strokes,
             }
-            for w, c, eff in rows
+            for w, c, eff, override_class, override_note in rows
         ]
 
 

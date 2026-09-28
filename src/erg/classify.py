@@ -2,32 +2,35 @@
 
 Classes: test_2k | test_6k | test_10k | interval | steady | short_piece | unknown
 
-Intensity comes from HR when it is valid (the most reliable signal), and falls back to
-pace relative to the athlete's best 2k when it is not. Every result carries a confidence
-and the reason, and any of them can be overridden by hand (classification_override).
+Rules, in order:
+  1. A solo (no rest) piece at 2k, 6k or 10k is a test, whatever the pace.
+  2. A solo piece under 10 minutes is a short piece (warm-up, cool-down, sprint).
+  3. Everything else is judged against the athlete's own steady-state pace. Rowing more
+     than a margin (default 10s/500m) faster than it is interval work (UT1 up to
+     anaerobic threshold and above), whether the session was continuous or broken up.
+     Otherwise it is steady.
+
+The steady baseline is personal: the mean of the athlete's slower sessions after
+dropping outlier paddles. It can be overridden per athlete, and any single piece can
+be overridden by hand (classification_override).
 """
 
+import statistics
 from dataclasses import dataclass
 from decimal import Decimal
 
-CLASSIFIER_VERSION = 1
+CLASSIFIER_VERSION = 2
 
 TEST_DISTANCES = {2000: "test_2k", 6000: "test_6k", 10000: "test_10k"}
+CLASSES = ("test_2k", "test_6k", "test_10k", "interval", "steady", "short_piece", "unknown")
 DISTANCE_TOLERANCE = 0.02  # ±2% counts as "that distance"
 
-# Fractions of max HR. Below TEST_HR_FLOOR a piece at a test distance is treated as steady.
-TEST_HR_FRACTION = 0.82
-STEADY_HR_FRACTION = 0.75
+SHORT_PIECE_S = 600  # under 10 minutes of solo work
 
-# Pace ceilings for a test at each distance, as a multiple of the athlete's best 2k pace.
-# Rowing-standard deltas: 6k ≈ 2k + 8s/500m, 10k ≈ 2k + 15-18s/500m.
-TEST_PACE_RATIO = {2000: Decimal("1.06"), 6000: Decimal("1.18"), 10000: Decimal("1.26")}
-
-SHORT_PIECE_S = 600  # under 10 minutes of work is a warm-up, cool-down or short sprint
-
-# Athlete rule: anything averaging slower than 1:55/500m is steady state, whatever its shape.
-# A 4x15' or 4x3k at 2:00 is steady work even when HR drifts above 150.
-STEADY_PACE_S_500 = Decimal(115)
+DEFAULT_INTERVAL_MARGIN_S = Decimal(10)
+BASELINE_MIN_WORK_S = 600  # sessions shorter than this don't say much about steady pace
+BASELINE_MIN_SESSIONS = 5
+BASELINE_SLOW_FRACTION = 0.5  # the slower half of sessions defines steady state
 
 
 @dataclass(frozen=True)
@@ -39,16 +42,9 @@ class Features:
     workout_type: str | None
     avg_pace_s_500: Decimal | None  # work-only pace; from strokes when the summary is truncated
     pace_from_strokes: bool = False
-    hr_avg: int | None = None  # already validated; None when absent/implausible
-    max_heart_rate: int | None = None
-    best_2k_pace_s_500: Decimal | None = None
     stroke_interval_count: int = 0  # intervals detected in the stroke stream
     summary_interval_count: int = 0  # rows in interval_split of kind 'interval'
-
-
-def _mmss(pace: Decimal) -> str:
-    total = float(pace)
-    return f"{int(total // 60)}:{total % 60:04.1f}"
+    interval_threshold_s_500: Decimal | None = None  # faster than this is interval work
 
 
 @dataclass(frozen=True)
@@ -58,8 +54,14 @@ class Classification:
     reason: str
 
 
-def _is_interval(f: Features) -> bool:
-    return (
+def mmss(pace: Decimal | float) -> str:
+    total = float(pace)
+    return f"{int(total // 60)}:{total % 60:04.1f}"
+
+
+def is_solo(f: Features) -> bool:
+    """One continuous piece: no rest, no interval structure."""
+    return not (
         f.rest_time_s > 0
         or (f.workout_type or "").endswith("Interval")
         or f.summary_interval_count > 1
@@ -67,59 +69,65 @@ def _is_interval(f: Features) -> bool:
     )
 
 
-def _test_distance(distance_m: int) -> tuple[int, str] | None:
+def match_test_distance(distance_m: int) -> tuple[int, str] | None:
     for target, name in TEST_DISTANCES.items():
         if abs(distance_m - target) <= target * DISTANCE_TOLERANCE:
             return target, name
     return None
 
 
+def steady_baseline(paces: list[Decimal]) -> Decimal | None:
+    """The athlete's steady-state pace: mean of their slower sessions, outliers removed.
+
+    `paces` are work paces of non-test sessions of at least 10 minutes. Very slow outliers
+    (paddles, cool-downs) sit above the upper Tukey fence and are dropped first, so they
+    can't drag the baseline slower.
+    """
+    if len(paces) < BASELINE_MIN_SESSIONS:
+        return None
+    ordered = sorted(float(p) for p in paces)
+    q1, _, q3 = statistics.quantiles(ordered, n=4)
+    fence = q3 + 1.5 * (q3 - q1)
+    kept = [p for p in ordered if p <= fence]
+    slow = kept[int(len(kept) * (1 - BASELINE_SLOW_FRACTION)) :]
+    if not slow:
+        return None
+    return Decimal(str(round(statistics.fmean(slow), 2)))
+
+
 def classify(f: Features) -> Classification:
-    interval_shaped = _is_interval(f)
+    solo = is_solo(f)
 
-    # A 2k test is ~6:30, so test distances are never "short pieces".
-    if not interval_shaped and 0 < f.work_time_s < SHORT_PIECE_S and not _test_distance(f.work_distance_m):
-        return Classification("short_piece", 0.8, f"continuous, under {SHORT_PIECE_S // 60} min")
+    # 1. Tests are defined by distance alone.
+    if solo and (match := match_test_distance(f.work_distance_m)):
+        target, name = match
+        return Classification(name, 0.95, f"solo {target}m")
 
-    # Pace rules everything: slower than 1:55/500m is steady work, interval-shaped or not.
-    if f.avg_pace_s_500 and f.avg_pace_s_500 > STEADY_PACE_S_500:
-        suffix = " (pace from strokes)" if f.pace_from_strokes else ""
-        shape = "interval-shaped but " if interval_shaped else ""
-        return Classification("steady", 0.9, f"{shape}{_mmss(f.avg_pace_s_500)}/500m, slower than 1:55{suffix}")
+    # 2. Short solo pieces.
+    if solo and 0 < f.work_time_s < SHORT_PIECE_S:
+        return Classification("short_piece", 0.8, f"solo, under {SHORT_PIECE_S // 60} min")
 
-    if interval_shaped:
-        # Faster than 1:55 with rests: hard interval work, any shape from 4x10' to 20x30".
-        return Classification("interval", 0.95, "rest periods present, faster than 1:55/500m")
+    shape = "solo" if solo else "broken into intervals"
+    suffix = " (pace from strokes)" if f.pace_from_strokes else ""
 
-    if f.work_time_s <= 0 or f.work_distance_m <= 0:
+    if f.avg_pace_s_500 is None:
+        if not solo:
+            return Classification("interval", 0.5, "rest periods present, no pace to judge intensity")
         return Classification("unknown", 0.0, "no work time or distance recorded")
 
-    match = _test_distance(f.work_distance_m)
-    if match:
-        target, name = match
-        hr_ceiling = f.max_heart_rate
-        if f.hr_avg and hr_ceiling:
-            fraction = f.hr_avg / hr_ceiling
-            if fraction >= TEST_HR_FRACTION:
-                return Classification(name, 0.9, f"{target}m at {fraction:.0%} of max HR")
-            if fraction < STEADY_HR_FRACTION:
-                return Classification("steady", 0.8, f"{target}m but only {fraction:.0%} of max HR")
-            return Classification(name, 0.6, f"{target}m at {fraction:.0%} of max HR (borderline)")
+    if f.interval_threshold_s_500 is None:
+        # Not enough history to know this athlete's steady pace yet.
+        if not solo:
+            return Classification("interval", 0.5, f"{shape}, steady baseline not established yet")
+        return Classification("steady", 0.5, f"{shape}, steady baseline not established yet")
 
-        # No usable HR: fall back to pace relative to the athlete's best 2k.
-        if f.avg_pace_s_500 and f.best_2k_pace_s_500:
-            ratio = f.avg_pace_s_500 / f.best_2k_pace_s_500
-            if ratio <= TEST_PACE_RATIO[target]:
-                return Classification(name, 0.6, f"{target}m at {ratio:.2f}x best 2k pace, no HR")
-            return Classification("steady", 0.6, f"{target}m but {ratio:.2f}x best 2k pace, no HR")
-        return Classification(name, 0.4, f"{target}m, no HR or pace reference")
-
-    if f.hr_avg and f.max_heart_rate:
-        fraction = f.hr_avg / f.max_heart_rate
-        if fraction >= TEST_HR_FRACTION:
-            return Classification(
-                "steady", 0.5, f"continuous at {fraction:.0%} of max HR — hard, but not a test distance"
-            )
-        return Classification("steady", 0.9, f"continuous, {fraction:.0%} of max HR")
-
-    return Classification("steady", 0.7, "continuous, no HR")
+    # 3. Intensity against the athlete's own steady pace.
+    pace = f.avg_pace_s_500
+    threshold = f.interval_threshold_s_500
+    if pace < threshold:
+        return Classification(
+            "interval", 0.9, f"{shape}, {mmss(pace)}/500m is faster than the {mmss(threshold)} threshold{suffix}"
+        )
+    return Classification(
+        "steady", 0.9, f"{shape}, {mmss(pace)}/500m is at or slower than the {mmss(threshold)} threshold{suffix}"
+    )

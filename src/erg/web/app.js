@@ -17,21 +17,57 @@ const mmss = (s, decimals = 1) => {
 
 const signed = (s) => (s === null || s === undefined ? "–" : `${s > 0 ? "+" : ""}${s.toFixed(2)}s`);
 
-async function api(path) {
-  const res = await fetch(path);
+// Shared with pieces.js. Returns null (after showing sign-in) when the session is gone.
+async function api(path, options = {}) {
+  const init = { ...options };
+  if (init.body !== undefined && typeof init.body !== "string") {
+    init.body = JSON.stringify(init.body);
+    init.headers = { "Content-Type": "application/json", ...(init.headers || {}) };
+  }
+  const res = await fetch(path, init);
   if (res.status === 401) {
     showSignIn();
     return null;
   }
-  if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch (_) {}
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
   return res.json();
 }
 
 function showSignIn() {
-  $("picker").hidden = true;
-  $("results").hidden = true;
+  $("tab-replay").hidden = true;
+  $("tab-pieces").hidden = true;
+  $("tabs").hidden = true;
   $("signin").hidden = false;
 }
+
+// ---- tabs -----------------------------------------------------------------
+
+const tabs = { replay: null, pieces: null }; // per-tab "on show" hooks
+let replayStale = false; // set when classifications change on the pieces tab
+
+function showTab(name) {
+  if (!(name in tabs)) name = "replay";
+  for (const key of Object.keys(tabs)) $(`tab-${key}`).hidden = key !== name;
+  document.querySelectorAll("#tabs .tab").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
+  if (name === "replay" && state.playing) stop();
+  if (tabs[name]) tabs[name]();
+}
+
+tabs.replay = () => {
+  if (replayStale) {
+    replayStale = false;
+    loadWorkouts();
+  }
+  if (state.data) drawAll(); // canvases measured 0px wide while hidden
+};
+
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 async function loadWorkouts() {
   const cls = $("class-filter").value;
@@ -86,7 +122,15 @@ function syncButton() {
 }
 
 async function compare() {
-  const data = await api(`/workouts/compare?ids=${state.selected.join(",")}`);
+  let data;
+  try {
+    data = await api(`/workouts/compare?ids=${state.selected.join(",")}`);
+  } catch (err) {
+    $("results").hidden = false;
+    $("note").hidden = false;
+    $("note").textContent = `Could not compare: ${err.message}`;
+    return;
+  }
   if (data === null) return;
   state.data = data;
   state.data.pieces.forEach((p, i) => (p.color = COLORS[i % COLORS.length]));
@@ -461,7 +505,9 @@ async function start() {
   const me = await api("/athletes/me");
   if (me === null) return;
   $("who").textContent = me.username ? `${me.username} · ${me.workouts} workouts` : `${me.workouts} workouts`;
+  $("tabs").hidden = false;
   await loadWorkouts();
+  showTab(location.hash.slice(1) || "replay");
 }
 
 start();

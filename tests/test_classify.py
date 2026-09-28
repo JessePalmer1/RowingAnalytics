@@ -1,102 +1,133 @@
 from decimal import Decimal
 
-from erg.classify import Features, classify
+import pytest
+
+from erg.classify import Features, classify, match_test_distance, steady_baseline
 from erg.eligibility import Eligibility, EligibilityInputs, evaluate
 
-MAX_HR = 193
-BEST_2K = Decimal("96")
+THRESHOLD = Decimal("114.1")  # steady 2:04.1 minus a 10s margin
 
 
 def feat(**kw):
     base = dict(
         workout_id=1,
-        work_time_s=Decimal(1200),
-        work_distance_m=5000,
+        work_time_s=Decimal(1800),
+        work_distance_m=7500,
         rest_time_s=Decimal(0),
-        workout_type="FixedDistanceSplits",
-        avg_pace_s_500=Decimal(110),  # 1:50 — faster than the steady cutoff
-        hr_avg=140,
-        max_heart_rate=MAX_HR,
-        best_2k_pace_s_500=BEST_2K,
+        workout_type="FixedTimeSplits",
+        avg_pace_s_500=Decimal(120),
         stroke_interval_count=1,
         summary_interval_count=0,
+        interval_threshold_s_500=THRESHOLD,
     )
     return Features(**(base | kw))
 
 
-def test_interval_detected_by_rest_time_type_or_strokes():
-    assert classify(feat(rest_time_s=Decimal(240))).workout_class == "interval"
-    assert classify(feat(workout_type="VariableInterval")).workout_class == "interval"
-    assert classify(feat(stroke_interval_count=6)).workout_class == "interval"
-    assert classify(feat(summary_interval_count=4)).workout_class == "interval"
+# ---- rule 1: solo test distances are tests, whatever the pace ---------------
+
+@pytest.mark.parametrize("distance,expected", [(2000, "test_2k"), (6000, "test_6k"), (10000, "test_10k")])
+def test_solo_test_distance_is_a_test_regardless_of_pace(distance, expected):
+    for pace in (Decimal(95), Decimal(125), Decimal(160)):  # race pace, steady, paddle
+        result = classify(feat(work_distance_m=distance, avg_pace_s_500=pace, work_time_s=Decimal(distance) * pace / 500))
+        assert result.workout_class == expected
+        assert result.reason == f"solo {distance}m"
 
 
-def test_intervals_of_any_shape_share_one_class():
-    # 4x10min and 20x30s are both hard efforts at or above threshold.
-    long_intervals = feat(work_time_s=Decimal(2400), work_distance_m=10000, rest_time_s=Decimal(600))
-    short_intervals = feat(work_time_s=Decimal(600), work_distance_m=2600, rest_time_s=Decimal(600), hr_avg=180)
-    assert classify(long_intervals).workout_class == classify(short_intervals).workout_class == "interval"
+def test_test_distance_tolerance_is_two_percent():
+    assert match_test_distance(1970) == (2000, "test_2k")
+    assert match_test_distance(6110) == (6000, "test_6k")
+    assert match_test_distance(1950) is None
+    assert match_test_distance(5000) is None
 
 
-def test_pace_slower_than_155_is_steady_whatever_the_shape():
-    # Athlete rule: 4x15' or 4x3k at 2:00 is steady work even with rests and HR over 150.
-    shaped = feat(rest_time_s=Decimal(600), avg_pace_s_500=Decimal(120), hr_avg=160)
-    assert classify(shaped).workout_class == "steady"
-    assert "interval-shaped but" in classify(shaped).reason
-    # Just inside the cutoff stays interval work.
-    assert classify(feat(rest_time_s=Decimal(600), avg_pace_s_500=Decimal("115.0"))).workout_class == "interval"
-    assert classify(feat(rest_time_s=Decimal(600), avg_pace_s_500=Decimal("115.1"))).workout_class == "steady"
+def test_test_distance_broken_into_intervals_is_not_a_test():
+    # 2x1000m is 2000m of work, but not a solo 2k.
+    broken = feat(work_distance_m=2000, rest_time_s=Decimal(240), avg_pace_s_500=Decimal(89))
+    assert classify(broken).workout_class == "interval"
+    by_strokes = feat(work_distance_m=6000, stroke_interval_count=3, avg_pace_s_500=Decimal(118))
+    assert classify(by_strokes).workout_class == "steady"
+
+
+def test_a_2k_test_is_never_a_short_piece():
+    # 6:24 is under the 10-minute floor, but 2000m solo is a test first.
+    assert classify(feat(work_distance_m=2000, work_time_s=Decimal(384))).workout_class == "test_2k"
+
+
+# ---- rule 2: short solo pieces ----------------------------------------------
+
+def test_short_solo_piece():
+    assert classify(feat(work_time_s=Decimal(60), work_distance_m=344, avg_pace_s_500=Decimal(87))).workout_class == "short_piece"
+    # Short but broken into intervals is judged on pace instead.
+    short_intervals = feat(work_time_s=Decimal(480), work_distance_m=2600, rest_time_s=Decimal(480), avg_pace_s_500=Decimal(92))
+    assert classify(short_intervals).workout_class == "interval"
+
+
+# ---- rule 3: pace against the athlete's own threshold -----------------------
+
+def test_faster_than_threshold_is_interval_whatever_the_shape():
+    assert classify(feat(avg_pace_s_500=Decimal(110))).workout_class == "interval"  # solo 5k-ish at 1:50
+    assert classify(feat(avg_pace_s_500=Decimal(110), rest_time_s=Decimal(600))).workout_class == "interval"
+
+
+def test_slower_than_threshold_is_steady_whatever_the_shape():
+    # A 4x15' or 4x3k at 2:00 is steady work even with rests between.
+    shaped = classify(feat(avg_pace_s_500=Decimal(120), rest_time_s=Decimal(600)))
+    assert shaped.workout_class == "steady" and "broken into intervals" in shaped.reason
+    assert classify(feat(avg_pace_s_500=Decimal(120))).workout_class == "steady"
+
+
+def test_threshold_boundary():
+    assert classify(feat(avg_pace_s_500=Decimal("114.0"))).workout_class == "interval"
+    assert classify(feat(avg_pace_s_500=Decimal("114.1"))).workout_class == "steady"  # at threshold counts as steady
+
+
+def test_threshold_is_personal():
+    # The same 1:58 session is steady for one athlete and interval work for a slower one.
+    same_piece = dict(avg_pace_s_500=Decimal(118))
+    assert classify(feat(**same_piece, interval_threshold_s_500=Decimal(114))).workout_class == "steady"
+    assert classify(feat(**same_piece, interval_threshold_s_500=Decimal(125))).workout_class == "interval"
+
+
+def test_without_a_baseline_falls_back_on_shape_with_low_confidence():
+    solo = classify(feat(interval_threshold_s_500=None))
+    broken = classify(feat(interval_threshold_s_500=None, rest_time_s=Decimal(600)))
+    assert (solo.workout_class, broken.workout_class) == ("steady", "interval")
+    assert solo.confidence < 0.7 and broken.confidence < 0.7
 
 
 def test_stroke_derived_pace_is_marked_in_the_reason():
-    # Truncated summaries have no totals; pace comes from the stroke stream instead.
     f = feat(work_time_s=Decimal(0), work_distance_m=0, rest_time_s=Decimal(480),
              avg_pace_s_500=Decimal(125), pace_from_strokes=True)
     result = classify(f)
     assert result.workout_class == "steady" and "pace from strokes" in result.reason
 
 
-def test_test_distances_by_heart_rate():
-    assert classify(feat(work_distance_m=2000, work_time_s=Decimal(384), avg_pace_s_500=Decimal(96), hr_avg=178)).workout_class == "test_2k"
-    assert classify(feat(work_distance_m=6000, work_time_s=Decimal(1254), avg_pace_s_500=Decimal("104.5"), hr_avg=179)).workout_class == "test_6k"
-    assert classify(feat(work_distance_m=10000, work_time_s=Decimal(2238), avg_pace_s_500=Decimal("111.9"), hr_avg=166)).workout_class == "test_10k"
-    # ±2% still counts as the distance.
-    assert classify(feat(work_distance_m=1970, avg_pace_s_500=Decimal(96), hr_avg=180)).workout_class == "test_2k"
-    assert classify(feat(work_distance_m=1900, avg_pace_s_500=Decimal(96), hr_avg=180)).workout_class != "test_2k"
+def test_unknown_when_nothing_to_judge():
+    assert classify(feat(work_time_s=Decimal(0), work_distance_m=0, avg_pace_s_500=None)).workout_class == "unknown"
+    no_pace_intervals = feat(work_time_s=Decimal(0), work_distance_m=0, rest_time_s=Decimal(480), avg_pace_s_500=None)
+    assert classify(no_pace_intervals).workout_class == "interval"
 
 
-def test_a_2k_test_is_never_a_short_piece():
-    # 6:24 is under the 10-minute floor but 2000m is a test distance.
-    assert classify(feat(work_distance_m=2000, work_time_s=Decimal(384), avg_pace_s_500=Decimal(96), hr_avg=178)).workout_class == "test_2k"
+# ---- the steady baseline ----------------------------------------------------
+
+def test_baseline_is_the_mean_of_the_slower_half():
+    paces = [Decimal(p) for p in (100, 110, 115, 118, 120, 122, 124, 126)]
+    # Slower half: 120, 122, 124, 126 -> 123.
+    assert steady_baseline(paces) == Decimal("123.0")
 
 
-def test_easy_piece_at_a_test_distance_is_steady():
-    # Caught by the pace rule before HR is even consulted.
-    easy_6k = feat(work_distance_m=6000, work_time_s=Decimal(1500), avg_pace_s_500=Decimal(125), hr_avg=140)
-    assert classify(easy_6k).workout_class == "steady"
+def test_baseline_ignores_slow_outliers():
+    typical = [Decimal(p) for p in (112, 115, 118, 119, 120, 121, 122, 124, 125, 126)]
+    with_paddles = typical + [Decimal(160), Decimal(163)]
+    # The paddles sit above the Tukey fence and are dropped entirely, so the baseline is
+    # exactly what it would be without them: the slower half 121..126, mean 123.6.
+    assert steady_baseline(typical) == Decimal("123.6")
+    assert steady_baseline(with_paddles) == Decimal("123.6")
 
 
-def test_borderline_effort_is_flagged_low_confidence():
-    result = classify(feat(work_distance_m=6000, avg_pace_s_500=Decimal(110), hr_avg=152))  # 79% of max
-    assert result.workout_class == "test_6k" and result.confidence < 0.7
-
-
-def test_pace_fallback_when_hr_missing():
-    fast = classify(feat(work_distance_m=6000, hr_avg=None, avg_pace_s_500=Decimal("104.5")))
-    slow = classify(feat(work_distance_m=6000, hr_avg=None, avg_pace_s_500=Decimal("125")))
-    assert (fast.workout_class, slow.workout_class) == ("test_6k", "steady")
-    assert fast.confidence < 0.7  # no HR: always worth a look
-
-
-def test_steady_and_short_pieces():
-    assert classify(feat(work_time_s=Decimal(2820), hr_avg=141)).workout_class == "steady"
-    assert classify(feat(work_time_s=Decimal(60), work_distance_m=344, avg_pace_s_500=Decimal(87))).workout_class == "short_piece"
-
-
-def test_unknown_when_totals_are_missing():
-    # The 5 truncated-summary workouts have zero totals; the interval check catches them first.
-    assert classify(feat(work_time_s=Decimal(0), work_distance_m=0)).workout_class == "unknown"
-    assert classify(feat(work_time_s=Decimal(0), work_distance_m=0, rest_time_s=Decimal(480))).workout_class == "interval"
+def test_baseline_needs_enough_history():
+    assert steady_baseline([Decimal(120)] * 4) is None
+    assert steady_baseline([Decimal(120)] * 5) == Decimal("120.0")
 
 
 def elig(**kw):

@@ -5,16 +5,39 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from erg.classify import TEST_DISTANCES
+from erg.classify import CLASSES, mmss
 from erg.config import Settings, get_settings
 from erg.eligibility import METRICS
 from erg.db import session_scope
 from erg.models import OAuthToken
 from erg.metrics_runner import compute_load, compute_workout_metrics
-from erg.pipeline import classify_all, set_override, set_profile
+from erg.pipeline import (
+    classify_all,
+    clear_override,
+    set_classification_settings,
+    set_override,
+    set_profile,
+)
 from erg.summary import week_summary
 from erg.services import client_for_athlete
 from erg.sync import BackfillStats, StrokeFetchStats, backfill, fetch_strokes, renormalize
+
+
+def parse_pace(value: str) -> Decimal:
+    """'2:04' or '2:04.5' or plain seconds, as seconds per 500m."""
+    if ":" in value:
+        minutes, seconds = value.split(":", 1)
+        return Decimal(minutes) * 60 + Decimal(seconds)
+    return Decimal(value)
+
+
+def _print_thresholds(auto, effective, threshold, sessions: int) -> None:
+    if effective is None:
+        print(f"steady pace: not established yet ({sessions} usable sessions, need 5)")
+        return
+    source = "learned" if auto == effective else f"set by you (learned: {mmss(auto) if auto else 'n/a'})"
+    print(f"steady pace {mmss(effective)}/500m ({source}, from {sessions} sessions)")
+    print(f"interval threshold {mmss(threshold)}/500m: anything faster is interval work")
 
 
 def _resolve_athlete(athlete_id: int | None) -> int:
@@ -74,10 +97,16 @@ def main() -> None:
     fs.add_argument("--limit", type=int, help="max workouts to process this run")
     cl = sub.add_parser("classify", help="classify sessions and flag metric eligibility (no API calls)")
     cl.add_argument("--athlete-id", type=int)
-    ov = sub.add_parser("override", help="set the class of one workout by hand")
+    ov = sub.add_parser("override", help="set (or --clear) the class of one workout by hand")
     ov.add_argument("workout_id", type=int)
-    ov.add_argument("workout_class", choices=sorted(TEST_DISTANCES.values()) + ["interval", "steady", "short_piece", "unknown"])
+    ov.add_argument("workout_class", nargs="?", choices=CLASSES)
     ov.add_argument("--note")
+    ov.add_argument("--clear", action="store_true", help="hand the piece back to the classifier")
+    st = sub.add_parser("settings", help="classification settings: steady pace and interval margin")
+    st.add_argument("--athlete-id", type=int)
+    st.add_argument("--steady-pace", type=parse_pace, help="e.g. 2:04 per 500m; overrides the learned value")
+    st.add_argument("--auto", action="store_true", help="go back to the learned steady pace")
+    st.add_argument("--margin", type=Decimal, help="seconds/500m faster than steady that counts as interval work")
     pr = sub.add_parser("profile", help="override C2 profile values (max HR, weight) for this athlete")
     pr.add_argument("--athlete-id", type=int)
     pr.add_argument("--max-hr", type=int)
@@ -107,6 +136,7 @@ def main() -> None:
         with session_scope() as s:
             stats = classify_all(s, athlete_id)
         print(f"classified {stats.workouts} workouts ({stats.overridden} manual overrides)")
+        _print_thresholds(stats.steady_pace_auto, stats.steady_pace, stats.interval_threshold, stats.baseline_sessions)
         for name, n in stats.classes.most_common():
             print(f"  {name:12} {n}")
         print("eligible for:")
@@ -119,8 +149,25 @@ def main() -> None:
 
     elif args.cmd == "override":
         with session_scope() as s:
-            set_override(s, args.workout_id, args.workout_class, args.note)
-        print(f"workout {args.workout_id} -> {args.workout_class} (rerun `erg classify` to refresh eligibility)")
+            if args.clear:
+                had = clear_override(s, args.workout_id)
+                print(f"workout {args.workout_id}: " + ("override cleared" if had else "had no override"))
+            elif args.workout_class:
+                set_override(s, args.workout_id, args.workout_class, args.note)
+                print(f"workout {args.workout_id} -> {args.workout_class}")
+            else:
+                raise SystemExit("give a class, or --clear")
+        print("rerun `erg classify` and `erg metrics` to apply")
+
+    elif args.cmd == "settings":
+        athlete_id = _resolve_athlete(args.athlete_id)
+        with session_scope() as s:
+            set_classification_settings(
+                s, athlete_id, args.steady_pace, args.margin, clear_steady_pace=args.auto
+            )
+            stats = classify_all(s, athlete_id)
+        _print_thresholds(stats.steady_pace_auto, stats.steady_pace, stats.interval_threshold, stats.baseline_sessions)
+        print("reclassified; rerun `erg metrics` to refresh metrics")
 
     elif args.cmd == "profile":
         athlete_id = _resolve_athlete(args.athlete_id)

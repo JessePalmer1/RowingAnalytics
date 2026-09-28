@@ -32,6 +32,12 @@ class Athlete(Base):
     # Athlete-supplied corrections. Never touched by sync; they win over the C2 profile.
     max_heart_rate_override: Mapped[int | None] = mapped_column(Integer)
     resting_hr_override: Mapped[int | None] = mapped_column(Integer)  # for TRIMP; defaults to 60
+
+    # Classification settings. Steady-state pace is learned from history (auto) unless
+    # the athlete sets it; faster than steady minus the margin is interval work.
+    steady_pace_auto: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # s/500m, recomputed
+    steady_pace_override: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # s/500m
+    interval_margin_s: Mapped[Decimal] = mapped_column(Numeric(5, 1), server_default="10")
     weight_g_override: Mapped[int | None] = mapped_column(Integer)
     gender: Mapped[str | None] = mapped_column(Text)
     dob: Mapped[str | None] = mapped_column(Text)
@@ -47,6 +53,16 @@ class Athlete(Base):
     @property
     def effective_weight_g(self) -> int | None:
         return self.weight_g_override or self.weight_g
+
+    @property
+    def effective_steady_pace(self) -> Decimal | None:
+        return self.steady_pace_override or self.steady_pace_auto
+
+    @property
+    def interval_threshold(self) -> Decimal | None:
+        steady = self.effective_steady_pace
+        margin = self.interval_margin_s if self.interval_margin_s is not None else Decimal(10)
+        return None if steady is None else steady - margin
 
 
 class OAuthToken(Base):

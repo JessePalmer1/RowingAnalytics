@@ -56,6 +56,8 @@ uv run erg fetch-strokes             # drain the stroke fetch queue (new/edited 
 uv run erg profile --max-hr 193 --weight-lb 200   # corrections to the C2 profile
 uv run erg classify                  # classify sessions + flag metric eligibility (no API calls)
 uv run erg override 123456 steady --note "hard steady, not a test"
+uv run erg override 123456 --clear   # back to the classifier
+uv run erg settings --steady-pace 2:04 --margin 10   # or --auto to use the learned steady pace
 uv run erg metrics                   # EF, decoupling, HRR, pacing, DPS, daily load, ACWR
 uv run erg week                      # weekly summary (same payload as /summary/week)
 uv run erg renormalize               # re-derive normalized columns from stored raw payloads (no API calls)
@@ -75,12 +77,12 @@ uv run pytest                        # DB tests skip if Postgres isn't running
 - `src/erg/session.py` — signed session cookie; every data endpoint resolves the athlete from it
 - `src/erg/sync.py` — idempotent athlete/workout upserts, backfill, stroke fetch queue
 - `src/erg/strokes.py` — interval-aware stroke parsing (work/rest labels), elapsed offsets, LTTB downsampling
-- `src/erg/classify.py` — session classification (test_2k/6k/10k, interval, steady, short_piece) with confidence
+- `src/erg/classify.py` — session classification: solo 2k/6k/10k are tests; otherwise interval vs steady against a learned per-athlete steady pace
 - `src/erg/eligibility.py` — per-metric eligibility rules, each with a reason when ineligible
 - `src/erg/pipeline.py` — runs classification + eligibility over stored workouts; manual overrides
 - `src/erg/metrics.py` — derived metrics as pure functions (EF, decoupling, pacing, HRR, TRIMP, ACWR)
 - `src/erg/metrics_runner.py` — computes and stores metrics, daily load and rolling windows
 - `src/erg/summary.py` — weekly digest payload (descriptive only)
 - `src/erg/compare.py` — distance-aligned resampling + split attribution for ghost racing
-- `src/erg/web/` — race replay UI (vanilla JS + canvas, served at `/replay`)
+- `src/erg/web/` — UI served at `/replay`: race replay tab and a Pieces tab for classification overrides and settings (vanilla JS + canvas)
 - `src/erg/api.py`, `src/erg/cli.py` — FastAPI app and `erg` CLI

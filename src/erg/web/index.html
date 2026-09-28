@@ -10,6 +10,10 @@
 <header>
   <h1>Race replay</h1>
   <p class="sub">Distance-aligned ghost racing from your own stroke data. <span id="who" class="who"></span></p>
+  <nav id="tabs" class="tabs" hidden>
+    <a href="#replay" data-tab="replay" class="tab active">Race replay</a>
+    <a href="#pieces" data-tab="pieces" class="tab">Pieces</a>
+  </nav>
 </header>
 
 <section id="signin" class="picker" hidden>
@@ -18,73 +22,122 @@
   <p><a class="button" href="/auth/login">Connect Concept2</a></p>
 </section>
 
-<section id="picker" class="picker">
-  <div class="row">
-    <label>Class
-      <select id="class-filter">
-        <option value="test_2k" selected>2k tests</option>
-        <option value="test_6k">6k tests</option>
-        <option value="test_10k">10k tests</option>
-        <option value="steady">steady</option>
-        <option value="interval">interval</option>
-        <option value="">all</option>
-      </select>
-    </label>
-    <span class="hint">Pick 2–6 pieces. The first selected is the reference.</span>
-    <button id="compare" disabled>Compare</button>
-  </div>
-  <ul id="workout-list" class="workouts"></ul>
-</section>
-
-<section id="results" hidden>
-  <div id="note" class="note" hidden></div>
-
-  <div class="panel">
-    <div class="race-head">
-      <h2>Ghost race</h2>
-      <div class="controls">
-        <button id="play">Play</button>
-        <input id="scrub" type="range" min="0" max="1000" value="0">
-        <select id="speed">
-          <option value="1">1x</option>
-          <option value="2">2x</option>
-          <option value="4" selected>4x</option>
-          <option value="8">8x</option>
+<main id="tab-replay">
+  <section id="picker" class="picker">
+    <div class="row">
+      <label>Class
+        <select id="class-filter">
+          <option value="test_2k" selected>2k tests</option>
+          <option value="test_6k">6k tests</option>
+          <option value="test_10k">10k tests</option>
+          <option value="steady">steady</option>
+          <option value="interval">interval</option>
+          <option value="">all</option>
         </select>
-        <span id="clock" class="clock">0:00.0</span>
+      </label>
+      <span class="hint">Pick 2–6 pieces. The first selected is the reference.</span>
+      <button id="compare" disabled>Compare</button>
+    </div>
+    <ul id="workout-list" class="workouts"></ul>
+  </section>
+
+  <section id="results" hidden>
+    <div id="note" class="note" hidden></div>
+
+    <div class="panel">
+      <div class="race-head">
+        <h2>Ghost race</h2>
+        <div class="controls">
+          <button id="play">Play</button>
+          <input id="scrub" type="range" min="0" max="1000" value="0">
+          <select id="speed">
+            <option value="1">1x</option>
+            <option value="2">2x</option>
+            <option value="4" selected>4x</option>
+            <option value="8">8x</option>
+          </select>
+          <span id="clock" class="clock">0:00.0</span>
+        </div>
+      </div>
+      <canvas id="race" height="220"></canvas>
+      <table id="live" class="live"></table>
+    </div>
+
+    <div class="panel">
+      <h2>Splits <span id="segment-label" class="muted"></span></h2>
+      <div class="scroll"><table id="splits"></table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Pace <span class="muted">/500m, against distance</span></h2>
+      <canvas id="pace-chart" height="220"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Time gained or lost <span class="muted">against the reference</span></h2>
+      <canvas id="delta-chart" height="180"></canvas>
+    </div>
+
+    <div class="panel two">
+      <div>
+        <h2>Heart rate</h2>
+        <canvas id="hr-chart" height="180"></canvas>
+      </div>
+      <div>
+        <h2>Stroke length <span class="muted">metres per stroke</span></h2>
+        <canvas id="dps-chart" height="180"></canvas>
       </div>
     </div>
-    <canvas id="race" height="220"></canvas>
-    <table id="live" class="live"></table>
-  </div>
+  </section>
+</main>
 
-  <div class="panel">
-    <h2>Splits <span id="segment-label" class="muted"></span></h2>
-    <div class="scroll"><table id="splits"></table></div>
-  </div>
+<main id="tab-pieces" hidden>
+  <section class="panel">
+    <h2>How pieces are classified</h2>
+    <ol class="rules">
+      <li>A solo 2k, 6k or 10k is a <b>test</b>, whatever the pace.</li>
+      <li>A solo piece under 10 minutes is a <b>short piece</b>.</li>
+      <li>Everything else is <b>interval</b> work if its pace is faster than your threshold, otherwise <b>steady</b>.</li>
+    </ol>
+    <form id="settings" class="settings">
+      <label>Steady-state pace
+        <input id="steady-pace" type="text" inputmode="decimal" placeholder="2:04.0" size="7" autocomplete="off">
+        <span class="muted">/500m</span>
+      </label>
+      <button type="button" id="use-learned" class="link">use learned</button>
+      <label>Interval margin
+        <input id="margin" type="number" min="0" max="60" step="0.5" size="4">
+        <span class="muted">s faster than steady</span>
+      </label>
+      <button type="submit" id="save-settings">Save and reclassify</button>
+      <p id="threshold-line" class="threshold"></p>
+    </form>
+  </section>
 
-  <div class="panel">
-    <h2>Pace <span class="muted">/500m, against distance</span></h2>
-    <canvas id="pace-chart" height="220"></canvas>
-  </div>
-
-  <div class="panel">
-    <h2>Time gained or lost <span class="muted">against the reference</span></h2>
-    <canvas id="delta-chart" height="180"></canvas>
-  </div>
-
-  <div class="panel two">
-    <div>
-      <h2>Heart rate</h2>
-      <canvas id="hr-chart" height="180"></canvas>
+  <section class="panel">
+    <div class="row">
+      <h2 class="inline">Pieces</h2>
+      <label>Show
+        <select id="pieces-filter">
+          <option value="">all</option>
+          <option value="test_2k">2k tests</option>
+          <option value="test_6k">6k tests</option>
+          <option value="test_10k">10k tests</option>
+          <option value="interval">interval</option>
+          <option value="steady">steady</option>
+          <option value="short_piece">short pieces</option>
+          <option value="unknown">unknown</option>
+          <option value="manual">manual overrides only</option>
+        </select>
+      </label>
+      <span id="class-counts" class="hint"></span>
     </div>
-    <div>
-      <h2>Stroke length <span class="muted">metres per stroke</span></h2>
-      <canvas id="dps-chart" height="180"></canvas>
-    </div>
-  </div>
-</section>
+    <div id="status" class="status" role="status" hidden></div>
+    <div class="scroll"><table id="pieces" class="pieces"></table></div>
+  </section>
+</main>
 
 <script src="/static/app.js"></script>
+<script src="/static/pieces.js"></script>
 </body>
 </html>

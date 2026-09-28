@@ -270,16 +270,19 @@ Two mechanisms, both required — webhooks can be missed, polling is the safety 
 - Keep normalization re-runnable from `raw` (`erg renormalize`) so rule changes never need an API re-fetch.
 
 ### 4.4 Session classification
-Classes (as built): `test_2k`, `test_6k`, `test_10k`, `interval`, `steady`, `short_piece`, `unknown`.
+Classes (as built, classifier v2, 2026-09-28): `test_2k`, `test_6k`, `test_10k`, `interval`, `steady`, `short_piece`, `unknown`. Rules, in order:
 
-- **Pace rules everything (athlete rule):** any session averaging **slower than 1:55/500m of work pace is steady state**, whatever its shape and whatever HR did. A 4x15' or 4x3k at 2:00 with HR over 150 is steady work, not intervals. This check runs before every other signal.
-- **Interval** is what remains with rest periods and work pace faster than 1:55: every shape from 4x10' to 20x30", all hard efforts at or above threshold, one class. Detected by rest time, `workout_type`, summary interval count or stroke resets.
-- **Work pace falls back to the stroke stream** when the C2 summary is truncated (§1.7), so the zero-total workouts still classify. Two of the five turned out to be steady (2:07.5, 2:04.2).
-- **Test distances** are matched within ±2% of 2000/6000/10000m, then confirmed by intensity.
-- **Intensity comes from HR when valid**, for pieces faster than 1:55 at a test distance: ≥82% of max HR is a test; <75% means a steady piece at that distance; between the two, a test with low confidence. **Max HR is the athlete override (193), not the C2 profile value (199)** — see §3 `athlete.max_heart_rate_override`.
-- **Pace fallback when HR is missing:** pace relative to the athlete's best 2k, ceilings 1.06x (2k), 1.18x (6k), 1.26x (10k) — rowing-standard deltas of 2k+8s/500m for a 6k and +15-18s for a 10k. Always low confidence: flag for review.
-- **`short_piece`** is any continuous piece under 10 min that is not at a test distance (warm-up, cool-down or short sprint). Replaces the plan's original `warmup_short`. A 2k test is ~6:30, so test distances are exempt.
-- Confidence is emitted on every row; anything under 0.7 is printed by `erg classify` for review. Manual override lives in `classification_override` and **always wins**, survives recomputation, and re-runs eligibility. **Manual override matters** — you will disagree with the classifier and you need to win.
+1. **A solo 2k, 6k or 10k is a test, whatever the pace.** "Solo" means no rest and no interval structure; distance within ±2%. A 2x1000m is not a 2k test.
+2. **A solo piece under 10 minutes is a `short_piece`** (warm-up, cool-down, sprint).
+3. **Everything else is judged against the athlete's own steady pace.** More than a margin (default 10s/500m) faster than steady is `interval` — UT1 up to anaerobic threshold and above — whether the session was continuous or broken up. At or slower than the threshold is `steady`, including interval-shaped work like 4x15' or 4x3k.
+
+**Steady pace is learned per athlete** (`classify.steady_baseline`): take the work pace of every non-test session of 10+ minutes, drop slow outliers above the Tukey fence (Q3 + 1.5 IQR — paddles and cool-downs), and average the slower half. It is recomputed on every classification and stored as `athlete.steady_pace_auto`. The athlete can override it (`steady_pace_override`) and change the margin (`interval_margin_s`). Pieces overridden to a test class are excluded from the baseline. Until 5 qualifying sessions exist there is no baseline, and classification falls back on shape with low confidence.
+
+Calibration on the first athlete: learned steady 2:04.1, threshold 1:54.1 — within a second of the 1:55 threshold he set by hand under classifier v1. Moving from v1 to v2 changed two sessions (1:54.2 work pace, now steady).
+
+HR is no longer used for classification: tests are defined by distance, and steady vs interval by pace against the personal baseline.
+
+**Manual override** lives in `classification_override`, always wins, survives recomputation, and is editable in the UI (Pieces tab) and CLI (`erg override`, `erg override --clear`). An override can shift the learned baseline, so every change reclassifies the whole history and recomputes metrics for every piece whose class moved, not just the one edited. **Manual override matters** — you will disagree with the classifier and you need to win.
 
 ---
 
@@ -357,7 +360,10 @@ GET  /load/daily?from&to
 GET  /load/acwr?date
 GET  /summary/week?date                 # digest payload
 GET  /challenges/progress               # joins public C2 challenges to your meters
-POST /workouts/{id}/classification      # manual override
+POST   /workouts/{id}/classification    # manual override; reclassifies + refreshes metrics
+DELETE /workouts/{id}/classification    # back to the classifier
+GET    /athletes/me/settings            # steady pace (learned/override), margin, threshold
+PUT    /athletes/me/settings            # change them; reclassifies + recomputes everything
 POST /auth/logout
 ```
 
@@ -373,7 +379,7 @@ Downsampling strokes matters: a 15k has thousands of strokes; use largest-triang
 
 **Phase 2 — Strokes.** Stroke fetch worker, interval-aware parsing, bulk insert, `has_strokes` handling, downsampling endpoint. *Done when:* you can pull the stroke series for any 2k and plot it. **✅ Done 2026-09-16** — 113/113 workouts fetched (106,020 strokes, 0 missing, 0 errors, 5 truncated-summary warnings, §1.7); 2k 110330485 (6:23.9) plotted from `/workouts/{id}/strokes` with and without LTTB downsampling.
 
-**Phase 3 — Classification + eligibility.** Session classifier with confidence + manual override, HR validation, eligibility flags with reasons. *Done when:* you agree with the classifier on all 118 sessions (after overrides). **Built 2026-09-17** with the athlete's 1:55 steady rule applied: 118 classified as steady 74, interval 33, test_6k 4, test_2k 3, short_piece 3, test_10k 1 (2 confirmed manual overrides). Eligible: ef 44, decoupling 6, hrr 25, pacing 105, dps 111.
+**Phase 3 — Classification + eligibility.** *Revised 2026-09-28: classifier v2 with per-athlete steady baseline and a Pieces tab for overrides (§4.4).* Session classifier with confidence + manual override, HR validation, eligibility flags with reasons. *Done when:* you agree with the classifier on all 118 sessions (after overrides). **Built 2026-09-17** with the athlete's 1:55 steady rule applied: 118 classified as steady 74, interval 33, test_6k 4, test_2k 3, short_piece 3, test_10k 1 (2 confirmed manual overrides). Eligible: ef 44, decoupling 6, hrr 25, pacing 105, dps 111.
 
 **Phase 4 — Metrics engine.** EF, decoupling, HRR, pacing shape, DPS, daily load, ACWR. Versioned, recomputable, backfillable. *Done when:* you can see your EF and decoupling trend across the season and it matches the Feb-peak/April-detrain story you already know from the data. **Built 2026-09-17:** 44 EF, 6 decoupling, 30 HRR, 105 pacing, 111 DPS; 106 load days; 1,516 rolling rows. `erg metrics` recomputes everything from stored data.
 
@@ -392,6 +398,8 @@ Implementation notes:
 ## 8. Downstream features (consumers of this layer)
 
 **Race replay UI** — **built 2026-09-24**, served at `/replay` by the same FastAPI app (`src/erg/web/`, vanilla JS + canvas, no build step and no CDN). Piece picker filtered by class, animated ghost race with scrub and speed control, live gap/pace/HR readout, per-segment split table, and pace / time-delta / HR / stroke-length charts. `/workouts/compare?ids=&points=&segment_m=` does the distance-aligned interpolation and split attribution server-side, and warns when drag factor differs across the selected pieces. Verified against the three 2k tests: the April piece lost 3.67s to December, 2.4s of it after 1000m.
+
+The UI has two tabs: **Race replay** and **Pieces**. Pieces lists every workout with its class as a dropdown (manual override, with reset), the classifier's reason, and the classification settings (steady pace, margin, threshold).
 
 Totals are anchored to the logbook summary, so split tables and race times match the monitor exactly rather than ending 0.5–0.8s early on the last stroke sample (§1.7).
 

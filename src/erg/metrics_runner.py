@@ -28,6 +28,14 @@ log = logging.getLogger(__name__)
 
 ACUTE_DAYS = 7
 CHRONIC_DAYS = 28
+BULK_CHUNK = 1000  # rows per multi-row INSERT; well under Postgres's 65,535 parameter cap
+
+# Every value column of workout_metric (everything but the key and bookkeeping).
+METRIC_VALUE_COLUMNS = tuple(
+    c.name
+    for c in WorkoutMetric.__table__.columns
+    if c.name not in ("workout_id", "computed_at", "metric_version")
+)
 
 
 @dataclass
@@ -42,6 +50,13 @@ def _d(value: float | None, places: str = "0.0001") -> Decimal | None:
     return None if value is None else Decimal(str(round(value, len(places.split(".")[1]))))
 
 
+def _bulk_insert(session: Session, table, rows: list[dict]) -> None:
+    """One multi-row INSERT per chunk. Executing row by row costs a network round trip per
+    row, which into Docker on Windows turned ~1,500 rolling rows into 11 seconds."""
+    for start in range(0, len(rows), BULK_CHUNK):
+        session.execute(insert(table).values(rows[start : start + BULK_CHUNK]))
+
+
 def _eligible_map(session: Session, athlete_id: int) -> dict[int, set[str]]:
     rows = session.execute(
         select(WorkoutEligibility.workout_id, WorkoutEligibility.metric)
@@ -54,8 +69,13 @@ def _eligible_map(session: Session, athlete_id: int) -> dict[int, set[str]]:
     return out
 
 
-def compute_workout_metrics(session: Session, athlete_id: int) -> MetricStats:
-    """One row per workout. Only eligible metrics are computed; the rest stay null."""
+def compute_workout_metrics(
+    session: Session, athlete_id: int, workout_ids: list[int] | None = None
+) -> MetricStats:
+    """One row per workout. Only eligible metrics are computed; the rest stay null.
+
+    `workout_ids` limits the run to those pieces, e.g. after a single manual override.
+    """
     stats = MetricStats()
     athlete = session.get(Athlete, athlete_id)
     max_hr = athlete.effective_max_heart_rate if athlete else None
@@ -63,7 +83,10 @@ def compute_workout_metrics(session: Session, athlete_id: int) -> MetricStats:
     eligible = _eligible_map(session, athlete_id)
     now = datetime.now(timezone.utc)
 
-    for w in session.execute(select(Workout).where(Workout.athlete_id == athlete_id)).scalars():
+    query = select(Workout).where(Workout.athlete_id == athlete_id)
+    if workout_ids is not None:
+        query = query.where(Workout.id.in_(workout_ids))
+    for w in session.execute(query).scalars():
         allowed = eligible.get(w.id, set())
         points = [
             StrokePoint(
@@ -79,7 +102,9 @@ def compute_workout_metrics(session: Session, athlete_id: int) -> MetricStats:
             ).scalars()
         ]
         samples = metrics.work_samples(points)
-        values: dict[str, Decimal | int | None] = {}
+        # Start every column at None so a metric that is no longer eligible is cleared on
+        # recompute; omitting it would leave the previous value behind in the upsert.
+        values: dict[str, Decimal | int | str | None] = dict.fromkeys(METRIC_VALUE_COLUMNS)
 
         if "ef" in allowed:
             ef, watts, hr = metrics.efficiency_factor(samples)
@@ -177,8 +202,9 @@ def compute_load(session: Session, athlete_id: int) -> MetricStats:
 
     session.execute(delete(DailyLoad).where(DailyLoad.athlete_id == athlete_id))
     if daily:
-        session.execute(
-            insert(DailyLoad),
+        _bulk_insert(
+            session,
+            DailyLoad,
             [{"athlete_id": athlete_id, "date": day, "computed_at": now, **vals} for day, vals in daily.items()],
         )
     stats.days = len(daily)
@@ -211,7 +237,7 @@ def compute_load(session: Session, athlete_id: int) -> MetricStats:
                         "computed_at": now,
                     }
                 )
-        session.execute(insert(RollingMetric), rolling)
+        _bulk_insert(session, RollingMetric, rolling)
     stats.rolling_rows = len(rolling)
     session.commit()
     return stats
