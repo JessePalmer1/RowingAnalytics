@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 
@@ -29,6 +29,7 @@ from erg.services import client_for_athlete
 from erg.metrics_runner import ACUTE_DAYS, CHRONIC_DAYS
 from erg.classify import CLASSES
 from erg.describe import describe_workout
+from erg import importer
 from erg.pipeline import (
     clear_override,
     effective_class,
@@ -70,9 +71,31 @@ def replay_ui():
 STATE_COOKIE = "c2_oauth_state"
 
 
+MISSING_KEYS_PAGE = """<!doctype html><meta charset="utf-8"><title>Concept2 keys missing</title>
+<link rel="stylesheet" href="/static/app.css">
+<header><h1>Concept2 keys missing</h1></header>
+<section class="panel"><p>This app needs a Concept2 client ID and secret before anyone can sign in.</p>
+<p>Add them to a file called <code>.env</code> in the project folder:</p>
+<pre>C2_CLIENT_ID=...
+C2_CLIENT_SECRET=...</pre>
+<p>then restart the app. If someone shared this project with you, ask them for these two values.</p></section>"""
+
+
+@app.get("/status")
+def app_status():
+    """Public: what the UI needs to know before anyone signs in."""
+    settings = get_settings()
+    return {
+        "local_mode": settings.local_mode,
+        "concept2_configured": bool(settings.c2_client_id and settings.c2_client_secret),
+    }
+
+
 @app.get("/auth/login")
 def login():
     settings = get_settings()
+    if not (settings.c2_client_id and settings.c2_client_secret):
+        return HTMLResponse(MISSING_KEYS_PAGE, status_code=503)
     state = secrets.token_urlsafe(24)
     resp = RedirectResponse(oauth.authorize_url(settings, state))
     resp.set_cookie(STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax")
@@ -103,6 +126,9 @@ def callback(
         athlete_id = upsert_athlete(s, me)
         store_token(s, athlete_id, token)
 
+    # Import (or catch up) straight away, so a first-time user never lands on an empty page.
+    importer.start(athlete_id)
+
     resp = RedirectResponse("/replay")
     resp.delete_cookie(STATE_COOKIE)
     issue_session(resp, athlete_id, settings)
@@ -130,7 +156,19 @@ def get_athlete(athlete_id: int = Depends(current_athlete)):
             "workouts": s.execute(
                 select(func.count()).select_from(Workout).where(Workout.athlete_id == athlete_id)
             ).scalar(),
+            "local_mode": get_settings().local_mode,
         }
+
+
+@app.post("/athletes/me/import")
+def start_import(athlete_id: int = Depends(current_athlete)):
+    """Pull workouts and strokes from Concept2, then classify and compute metrics, in the background."""
+    return importer.start(athlete_id).as_dict()
+
+
+@app.get("/athletes/me/import")
+def import_status(athlete_id: int = Depends(current_athlete)):
+    return importer.status(athlete_id).as_dict()
 
 
 @app.post("/athletes/me/backfill")

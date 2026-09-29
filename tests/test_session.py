@@ -85,7 +85,11 @@ def test_athletes_cannot_see_each_others_workouts(db, settings):
 
 
 @respx.mock
-def test_callback_signs_the_athlete_in(db, settings):
+def test_callback_signs_the_athlete_in(db, settings, monkeypatch):
+    from erg import importer
+
+    started = []
+    monkeypatch.setattr(importer, "start", lambda athlete_id: started.append(athlete_id))
     fake_c2([])
     respx.post("https://c2.test/oauth/access_token").mock(
         return_value=httpx.Response(
@@ -100,6 +104,7 @@ def test_callback_signs_the_athlete_in(db, settings):
         done = http.get(f"/auth/callback?code=abc&state={state}", follow_redirects=False)
         assert done.status_code == 307 and done.headers["location"] == "/replay"
         assert session.read(done.cookies[SESSION_COOKIE], settings) == 42
+        assert started == [42]  # signing in kicks off the import
 
         http.cookies.set(SESSION_COOKIE, done.cookies[SESSION_COOKIE])
         assert http.get("/athletes/me").status_code == 200

@@ -16,10 +16,28 @@
   </nav>
 </header>
 
+<div id="local-banner" class="banner" hidden>
+  Local mode: your data lives only while this app is running and is deleted when you close it.
+</div>
+
 <section id="signin" class="picker" hidden>
   <h2>Connect your Concept2 account</h2>
   <p class="sub">Sign in with Concept2 to import your workouts. Read-only: this never writes to your logbook.</p>
-  <p><a class="button" href="/auth/login">Connect Concept2</a></p>
+  <p id="signin-action"><a class="button" href="/auth/login">Connect Concept2</a></p>
+  <p id="keys-missing" class="note" hidden>
+    This copy of the app has no Concept2 keys yet. Add <code>C2_CLIENT_ID</code> and
+    <code>C2_CLIENT_SECRET</code> to a <code>.env</code> file in the project folder and restart.
+    If someone shared the project with you, ask them for those two values.
+  </p>
+</section>
+
+<section id="import" class="panel import" hidden>
+  <div class="row">
+    <h2 class="inline" id="import-title">Importing your workouts</h2>
+    <button id="import-start" type="button" hidden>Import my workouts</button>
+  </div>
+  <div class="progress" aria-hidden="true"><div id="import-bar" class="bar"></div></div>
+  <p id="import-detail" class="hint" role="status"></p>
 </section>
 
 <main id="tab-replay">

@@ -504,13 +504,113 @@ $("scrub").addEventListener("input", (e) => {
 });
 window.addEventListener("resize", () => state.data && drawAll());
 
-async function start() {
+// ---- import ---------------------------------------------------------------
+
+const STAGE_TEXT = {
+  workouts: () => "Reading your workout list from Concept2…",
+  strokes: (j) =>
+    j.total ? `Fetching stroke data: ${j.done} of ${j.total} workouts` : "Checking for stroke data…",
+  classify: () => "Classifying pieces…",
+  metrics: () => "Computing metrics…",
+};
+
+let importPoll = null;
+
+function renderImport(job) {
+  const panel = $("import");
+  const bar = $("import-bar");
+  panel.hidden = false;
+  $("import-start").hidden = job.state === "running";
+
+  if (job.state === "running") {
+    $("import-title").textContent = "Importing your workouts";
+    const counted = job.stage === "strokes" && job.total > 0;
+    bar.classList.toggle("indeterminate", !counted);
+    bar.style.width = counted ? `${Math.round((job.done / job.total) * 100)}%` : "";
+    const found = job.workouts !== null ? ` Found ${job.workouts} workouts.` : "";
+    $("import-detail").textContent = (STAGE_TEXT[job.stage] || (() => "Working…"))(job) + found;
+    return;
+  }
+  bar.classList.remove("indeterminate");
+  if (job.state === "error") {
+    $("import-title").textContent = "Import stopped";
+    bar.style.width = "0";
+    $("import-detail").textContent = `Something went wrong: ${job.error}. Try again, or restart the app.`;
+    $("import-start").textContent = "Try again";
+    return;
+  }
+  // idle: nothing imported yet
+  $("import-title").textContent = "No workouts yet";
+  bar.style.width = "0";
+  $("import-detail").textContent = "Import your Concept2 logbook to start racing your pieces.";
+  $("import-start").textContent = "Import my workouts";
+}
+
+async function pollImport() {
+  const job = await api("/athletes/me/import");
+  if (job === null) return;
+  if (job.state === "running") {
+    renderImport(job);
+    importPoll = setTimeout(pollImport, 1000);
+    return;
+  }
+  importPoll = null;
+  if (job.state === "done") {
+    $("import").hidden = true;
+    if (job.errors.length) console.warn("import: workouts without strokes", job.errors);
+    await refreshAfterImport();
+  } else {
+    renderImport(job);
+  }
+}
+
+async function refreshAfterImport() {
   const me = await api("/athletes/me");
   if (me === null) return;
-  $("who").textContent = me.username ? `${me.username} · ${me.workouts} workouts` : `${me.workouts} workouts`;
-  $("tabs").hidden = false;
+  setWho(me);
+  replayStale = false;
+  pieces.loaded = false; // pieces.js reloads its table next time the tab opens
   await loadWorkouts();
+  if (location.hash.slice(1) === "pieces") tabs.pieces();
+}
+
+async function startImport() {
+  $("import-start").hidden = true;
+  const job = await api("/athletes/me/import", { method: "POST" });
+  if (job === null) return;
+  renderImport(job);
+  if (!importPoll) importPoll = setTimeout(pollImport, 800);
+}
+
+$("import-start").addEventListener("click", startImport);
+
+// ---- startup ----------------------------------------------------------------
+
+function setWho(me) {
+  $("who").textContent = me.username ? `${me.username} · ${me.workouts} workouts` : `${me.workouts} workouts`;
+}
+
+async function start() {
+  const status = await (await fetch("/status")).json();
+  $("local-banner").hidden = !status.local_mode;
+  $("keys-missing").hidden = status.concept2_configured;
+  $("signin-action").hidden = !status.concept2_configured;
+
+  const me = await api("/athletes/me");
+  if (me === null) return;
+  setWho(me);
+  $("tabs").hidden = false;
   showTab(location.hash.slice(1) || "replay");
+
+  // Signing in starts an import on the server; pick it up, or offer one if nothing is there.
+  const job = await api("/athletes/me/import");
+  if (job && job.state === "running") {
+    renderImport(job);
+    importPoll = setTimeout(pollImport, 1000);
+  } else if (job && (job.state === "error" || me.workouts === 0)) {
+    renderImport(job);
+  }
+  await loadWorkouts();
 }
 
 start();

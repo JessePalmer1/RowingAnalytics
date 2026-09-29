@@ -13,7 +13,14 @@ _SessionLocal = None
 def get_engine():
     global _engine, _SessionLocal
     if _engine is None:
-        _engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+        settings = get_settings()
+        if settings.local_mode:
+            from erg import embedded
+
+            _engine = create_engine(embedded.database_url(), pool_pre_ping=True)
+            embedded.create_schema(_engine)
+        else:
+            _engine = create_engine(settings.database_url, pool_pre_ping=True)
         _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 

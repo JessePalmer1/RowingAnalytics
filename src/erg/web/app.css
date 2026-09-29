@@ -185,3 +185,21 @@ button.link {
 .pieces .workout { min-width: 180px; }
 .pieces .workout .desc { font-weight: 600; color: var(--ink); white-space: nowrap; }
 .pieces .workout .shape { font-size: 12px; }
+
+/* ---- local mode + import ------------------------------------------------- */
+.banner {
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef2f9;
+  border: 1px solid #cdd8ea;
+  color: #34465f;
+  font-size: 13px;
+}
+.import .progress { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 12px 0 8px; }
+.import .bar { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+.import .bar.indeterminate { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .import .bar.indeterminate { animation: none; width: 100%; opacity: 0.4; } }
+code { font-size: 0.95em; background: #f0f0ec; padding: 1px 4px; border-radius: 4px; }
+pre { background: #f0f0ec; padding: 8px 12px; border-radius: 6px; }

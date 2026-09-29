@@ -14,6 +14,9 @@ dependencies = [
     "pydantic-settings>=2.4",
     "cryptography>=43",
     "itsdangerous>=2.2",
+    # Embedded Postgres for local mode (no Docker). Wheels exist for Python 3.11/3.12 only,
+    # which is why .python-version pins 3.12; uv downloads it automatically.
+    "pgserver>=0.1.4; python_version < '3.13'",
     "tzdata>=2024.1",
 ]
 

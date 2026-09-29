@@ -3,12 +3,31 @@ experimenting with concept2 API for training data analytics projects
 
 See [erg-analytics-data-layer-plan.md](erg-analytics-data-layer-plan.md) for the full spec. **Current status: Phases 1-4 done** (ingest, strokes, classification + eligibility, metrics engine), plus the weekly summary and the race replay UI.
 
-## Setup
+## Sharing it with friends (local mode)
+
+They need only [uv](https://docs.astral.sh/uv/getting-started/installation/) and the Concept2 client ID
+and secret, which you send them privately. Nothing else: no Docker, no Python install.
+
+```sh
+git clone <this repo> && cd RowingAnalytics
+run.cmd          # Windows
+./run.sh         # macOS / Linux
+```
+
+The first run asks for the two Concept2 values and saves them to `.env`. The browser opens, they click
+**Connect Concept2**, sign in with their own account, and their logbook imports with a progress bar
+(about a minute per 100 workouts). Each person only ever sees their own data.
+
+Local mode uses an embedded Postgres in a temporary folder: nothing is kept after the app closes, and
+the next launch imports again. It runs on port 8000, which is the redirect URI registered with Concept2.
+
+## Setup (persistent database)
+
 
 ```sh
 uv sync
 docker compose up -d                 # Postgres (creates `erg` and `erg_test`)
-cp .env.example .env                 # fill in C2 client id/secret + TOKEN_ENCRYPTION_KEY
+cp .env.example .env                 # fill in C2 client id/secret, TOKEN_ENCRYPTION_KEY, and DATABASE_URL
 uv run alembic upgrade head
 ```
 
@@ -80,4 +99,6 @@ uv run pytest                        # DB tests skip if Postgres isn't running
 - `src/erg/summary.py` — weekly digest payload (descriptive only)
 - `src/erg/compare.py` — distance-aligned resampling + split attribution for ghost racing
 - `src/erg/web/` — UI served at `/replay`: race replay tab and a Pieces tab for classification overrides and settings (vanilla JS + canvas)
+- `src/erg/embedded.py` — local mode: embedded Postgres (pgserver) in a temp folder, deleted on exit
+- `src/erg/importer.py` — in-app import (workouts, strokes, classify, metrics) with progress, started at sign-in
 - `src/erg/api.py`, `src/erg/cli.py` — FastAPI app and `erg` CLI

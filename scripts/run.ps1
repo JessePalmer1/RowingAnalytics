@@ -60,12 +60,27 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Test-Path .env)) {
-  Warn ".env is missing. Copy .env.example to .env and fill in your Concept2 client id/secret."
-  throw "missing .env"
+  # First run: ask for the two values a shared copy needs, and write them to .env.
+  Write-Host ""
+  Write-Host "    First run: this app needs the Concept2 client ID and secret." -ForegroundColor Yellow
+  Write-Host "    If someone shared this project with you, they can send you both." -ForegroundColor Yellow
+  $clientId = (Read-Host "    Concept2 client ID").Trim()
+  $clientSecret = (Read-Host "    Concept2 client secret").Trim()
+  if (-not $clientId -or -not $clientSecret) { throw "Both values are needed. Run this again when you have them." }
+  Set-Content -Path .env -Encoding utf8 -Value @("C2_CLIENT_ID=$clientId", "C2_CLIENT_SECRET=$clientSecret")
+  Step "Saved to .env"
+}
+
+# No DATABASE_URL means local mode: an embedded Postgres, no Docker, nothing kept on exit.
+$localMode = -not (Select-String -Path .env -Pattern '^\s*DATABASE_URL\s*=\s*\S' -Quiet)
+if ($localMode) {
+  Step "Local mode: embedded database, cleared when you close the app"
+  if ($Sync -or $Recompute) { Warn "-Sync/-Recompute do nothing in local mode: the app imports after you sign in." }
 }
 
 # --- docker ------------------------------------------------------------------
 
+if (-not $localMode) {
 Step "Checking Docker"
 docker info --format '{{.ServerVersion}}' *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -91,22 +106,25 @@ do {
   if (-not $ready) { Start-Sleep -Seconds 2 }
 } while (-not $ready -and (Get-Date) -lt $deadline)
 if (-not $ready) { throw "Postgres did not become ready. Try: docker compose logs db" }
+}
 
 # --- python + schema ---------------------------------------------------------
 
-Step "Syncing dependencies"
+Step "Syncing dependencies (first run downloads Python 3.12 and packages)"
 Invoke-Native "uv sync" { uv sync --quiet }
 
-Step "Applying database migrations"
-Invoke-Native "alembic upgrade" { uv run alembic upgrade head }
+if (-not $localMode) {
+  Step "Applying database migrations"
+  Invoke-Native "alembic upgrade" { uv run alembic upgrade head }
+}
 
-if ($Sync) {
+if ($Sync -and -not $localMode) {
   Step "Pulling new workouts from Concept2"
   Invoke-Native "erg sync" { uv run erg sync }
   $Recompute = $true  # new workouts need classifying and measuring
 }
 
-if ($Recompute) {
+if ($Recompute -and -not $localMode) {
   Step "Recomputing classification and metrics"
   Invoke-Native "erg classify" { uv run erg classify }
   Invoke-Native "erg metrics" { uv run erg metrics }
@@ -122,23 +140,12 @@ $server = Start-Process -FilePath "uv" `
   -PassThru -NoNewWindow
 
 try {
-  $up = Wait-ForPort -port $Port -timeoutSeconds 60 -process $server
+  $up = Wait-ForPort -port $Port -timeoutSeconds 90 -process $server
 
   if ($server.HasExited) { throw "The API exited on startup. Run 'uv run uvicorn erg.api:app' to see the error." }
   if (-not $up) { throw "The API did not respond on port $Port." }
 
-  # A fresh database has no athlete yet: send them through the Concept2 login first.
-  $authorized = $false
-  try {
-    $workouts = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/workouts?limit=1" -TimeoutSec 10
-    $authorized = @($workouts).Count -gt 0
-  } catch { $authorized = $false }
-
-  if (-not $authorized) {
-    $url = "http://localhost:$Port/auth/login"
-    Warn "No workouts found yet. Opening the Concept2 login; after that, run this script with -Sync."
-  }
-
+  # The page itself offers the Concept2 sign-in and runs the import, so always open it.
   Write-Host ""
   Write-Host "    Race replay:  http://localhost:$Port/replay" -ForegroundColor Green
   Write-Host "    API docs:     http://localhost:$Port/docs"

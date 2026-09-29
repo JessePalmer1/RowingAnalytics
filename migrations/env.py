@@ -24,6 +24,11 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 if not config.get_main_option("sqlalchemy.url"):
+    if get_settings().local_mode:
+        raise SystemExit(
+            "DATABASE_URL is not set, which means local mode: the embedded database builds its "
+            "schema at startup and needs no migrations. Set DATABASE_URL to migrate a persistent one."
+        )
     config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 # other values from the config, defined by the needs of env.py,

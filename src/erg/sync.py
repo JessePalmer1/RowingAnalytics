@@ -1,10 +1,11 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, insert as sa_insert, literal_column, select, update
+from sqlalchemy import delete, func, insert as sa_insert, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -143,13 +144,41 @@ def store_strokes(session: Session, workout: Workout, raw_strokes: list[dict[str
     return len(parsed.rows), "; ".join(parsed.warnings) or None
 
 
+def pending_stroke_count(session: Session, athlete_id: int, retry_errors: bool = True) -> int:
+    statuses = ["pending", "error"] if retry_errors else ["pending"]
+    return session.execute(
+        select(func.count())
+        .select_from(Workout)
+        .where(
+            Workout.athlete_id == athlete_id,
+            Workout.stroke_status.in_(statuses),
+            Workout.stroke_attempts < MAX_STROKE_ATTEMPTS,
+        )
+    ).scalar()
+
+
 def fetch_strokes(
-    session: Session, client: C2Client, athlete_id: int, limit: int | None = None, retry_errors: bool = True
+    session: Session,
+    client: C2Client,
+    athlete_id: int,
+    limit: int | None = None,
+    retry_errors: bool = True,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> StrokeFetchStats:
-    """Drain the stroke queue for one athlete. Each workout commits independently, so a crash loses at most one."""
+    """Drain the stroke queue for one athlete. Each workout commits independently, so a crash loses at most one.
+
+    `on_progress(done, total)` is called after each workout, for progress displays.
+    """
     stats = StrokeFetchStats()
+    total = pending_stroke_count(session, athlete_id, retry_errors)
+    if limit is not None:
+        total = min(total, limit)
+    if on_progress:
+        on_progress(0, total)
     tried: set[int] = set()  # a failed workout is retried on the next run, not in a tight loop
     while limit is None or len(tried) < limit:
+        if on_progress and tried:
+            on_progress(len(tried), max(total, len(tried)))
         workout = _claim_next(session, athlete_id, retry_errors, tried)
         if workout is None:
             session.rollback()
