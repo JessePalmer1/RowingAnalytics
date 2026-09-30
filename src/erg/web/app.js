@@ -533,6 +533,7 @@ function renderImport(job) {
   }
   bar.classList.remove("indeterminate");
   if (job.state === "error") {
+    $("sync-now").disabled = false;
     $("import-title").textContent = "Import stopped";
     bar.style.width = "0";
     $("import-detail").textContent = `Something went wrong: ${job.error}. Try again, or restart the app.`;
@@ -558,16 +559,21 @@ async function pollImport() {
   if (job.state === "done") {
     $("import").hidden = true;
     if (job.errors.length) console.warn("import: workouts without strokes", job.errors);
-    await refreshAfterImport();
+    await refreshAfterImport(job);
   } else {
     renderImport(job);
   }
 }
 
-async function refreshAfterImport() {
+async function refreshAfterImport(job) {
+  $("sync-now").disabled = false;
   const me = await api("/athletes/me");
   if (me === null) return;
   setWho(me);
+  if (job) {
+    const n = job.new_workouts || 0;
+    $("who").textContent += n ? ` · ${n} new or updated` : " · up to date";
+  }
   replayStale = false;
   pieces.loaded = false; // pieces.js reloads its table next time the tab opens
   await loadWorkouts();
@@ -576,6 +582,7 @@ async function refreshAfterImport() {
 
 async function startImport() {
   $("import-start").hidden = true;
+  $("sync-now").disabled = true;
   const job = await api("/athletes/me/import", { method: "POST" });
   if (job === null) return;
   renderImport(job);
@@ -583,6 +590,7 @@ async function startImport() {
 }
 
 $("import-start").addEventListener("click", startImport);
+$("sync-now").addEventListener("click", startImport);
 
 // ---- startup ----------------------------------------------------------------
 
@@ -605,6 +613,7 @@ async function start() {
   // Signing in starts an import on the server; pick it up, or offer one if nothing is there.
   const job = await api("/athletes/me/import");
   if (job && job.state === "running") {
+    $("sync-now").disabled = true;
     renderImport(job);
     importPoll = setTimeout(pollImport, 1000);
   } else if (job && (job.state === "error" || me.workouts === 0)) {
