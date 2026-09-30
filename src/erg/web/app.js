@@ -142,8 +142,9 @@ async function compare() {
 
   $("results").hidden = false;
   const note = $("note");
-  note.hidden = !state.data.note;
-  note.textContent = state.data.note || "";
+  // The note bar only reports comparison errors; the API's drag-factor note isn't shown.
+  note.hidden = true;
+  note.textContent = "";
   $("segment-label").textContent = `every ${state.data.segment_m}m`;
 
   renderSplits();
