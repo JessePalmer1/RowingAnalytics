@@ -52,67 +52,77 @@ def mock_logbook():
     respx.get(strokes_url(2)).mock(return_value=httpx.Response(200, json={"data": STROKES}))
 
 
-@respx.mock
-def test_import_runs_the_whole_pipeline(db, settings, monkeypatch):
-    from erg import services
-    from test_client import NoLimit
+def fake_client(monkeypatch, db):
+    # Sign-in creates the athlete before any import begins.
+    from erg.models import Athlete
+
+    db.add(Athlete(id=42, raw={"id": 42}))
+    db.commit()
+
     from erg.c2.client import C2Client
-
-    monkeypatch.setattr(
-        importer, "client_for_athlete",
-        lambda s, a: C2Client(s, lambda: "tok", http=httpx.Client(), limiter=NoLimit()),
-    )
-    mock_logbook()
-    progress = []
-    real_set = importer._set
-    monkeypatch.setattr(importer, "_set", lambda job, **kw: (progress.append(kw), real_set(job, **kw)))
-
-    job = importer.start(42, run_in_thread=False)
-
-    assert job.state == "done" and job.error is None
-    assert job.workouts == 2 and job.new_workouts == 2
-    assert db.execute(select(func.count()).select_from(Workout)).scalar() == 2
-    assert db.execute(select(func.count()).select_from(WorkoutClassification)).scalar() == 2
-    assert db.execute(select(func.count()).select_from(WorkoutMetric)).scalar() == 2
-    # Stroke progress was reported as it went: 0 of 2, then 1, then 2.
-    stroke_progress = [(p["done"], p["total"]) for p in progress if "done" in p and p.get("total")]
-    assert stroke_progress == [(0, 2), (1, 2), (2, 2)]
-    stages = [p["stage"] for p in progress if "stage" in p]
-    assert stages == ["workouts", "strokes", "classify", "metrics", "done"]
-
-
-@respx.mock
-def test_import_failure_leaves_a_readable_error(db, settings, monkeypatch):
     from test_client import NoLimit
-    from erg.c2.client import C2Client
 
     monkeypatch.setattr(
         importer, "client_for_athlete",
         lambda s, a: C2Client(s, lambda: "tok", http=httpx.Client(), limiter=NoLimit(), sleep=lambda _: None),
     )
+
+
+@respx.mock
+def test_import_runs_the_whole_pipeline(db, settings, monkeypatch):
+    fake_client(monkeypatch, db)
+    mock_logbook()
+    job = importer.run_to_completion(42)
+
+    assert job["state"] == "done" and job["error"] is None
+    assert job["workouts"] == 2 and job["new_workouts"] == 2
+    assert (job["done"], job["total"]) == (2, 2)  # both workouts' strokes fetched
+    assert db.execute(select(func.count()).select_from(Workout)).scalar() == 2
+    assert db.execute(select(func.count()).select_from(WorkoutClassification)).scalar() == 2
+    assert db.execute(select(func.count()).select_from(WorkoutMetric)).scalar() == 2
+
+
+@respx.mock
+def test_import_resumes_across_short_steps(db, settings, monkeypatch):
+    # A zero budget does exactly one unit of work per call, like a request that ran out of
+    # time: the job must still finish, carrying its state in the database between calls.
+    fake_client(monkeypatch, db)
+    mock_logbook()
+    importer.begin(42)
+    stages = []
+    for _ in range(20):
+        job = importer.step(42, budget_s=0)
+        stages.append(job["stage"])
+        if job["state"] != "running":
+            break
+    assert job["state"] == "done"
+    assert stages[0] == "workouts" or stages[0] == "strokes"
+    assert db.execute(select(func.count()).select_from(WorkoutMetric)).scalar() == 2
+
+
+@respx.mock
+def test_import_failure_leaves_a_readable_error(db, settings, monkeypatch):
+    fake_client(monkeypatch, db)
     respx.get("https://c2.test/api/users/me").mock(return_value=httpx.Response(401, text="token revoked"))
-    job = importer.start(42, run_in_thread=False)
-    assert job.state == "error" and "401" in job.error
+    job = importer.run_to_completion(42)
+    assert job["state"] == "error" and "401" in job["error"]
 
 
-def test_import_endpoints_need_a_session_and_report_status(db, settings, monkeypatch):
-    calls = []
-    monkeypatch.setattr(importer, "start", lambda athlete_id: calls.append(athlete_id) or importer.ImportStatus(athlete_id, state="running"))
+def test_import_endpoints_need_a_session(db, settings):
     with TestClient(api.app) as http:
         assert http.post("/athletes/me/import").status_code == 401
+        assert http.post("/athletes/me/import/step").status_code == 401
         sign_in(http, 42)
-        assert http.post("/athletes/me/import").json()["state"] == "running"
-        assert http.get("/athletes/me/import").json()["athlete_id"] == 42
-    assert calls == [42]
+        assert http.get("/athletes/me/import").json()["state"] == "idle"
 
 
-def test_a_second_start_while_running_returns_the_same_job():
-    job = importer.ImportStatus(7, state="running", stage="strokes")
-    importer._jobs[7] = job
-    try:
-        assert importer.start(7) is job
-    finally:
-        importer._jobs.pop(7, None)
+def test_begin_does_not_restart_a_running_job(db, settings):
+    from erg.models import Athlete
+
+    db.add(Athlete(id=42, raw={"id": 42}))
+    db.commit()
+    first = importer.begin(42)
+    assert importer.begin(42)["started_at"] == first["started_at"]
 
 
 # ---- the embedded database itself ---------------------------------------------

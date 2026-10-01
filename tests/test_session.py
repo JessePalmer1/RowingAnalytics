@@ -89,7 +89,7 @@ def test_callback_signs_the_athlete_in(db, settings, monkeypatch):
     from erg import importer
 
     started = []
-    monkeypatch.setattr(importer, "start", lambda athlete_id: started.append(athlete_id))
+    monkeypatch.setattr(importer, "begin", lambda athlete_id: started.append(athlete_id))
     fake_c2([])
     respx.post("https://c2.test/oauth/access_token").mock(
         return_value=httpx.Response(

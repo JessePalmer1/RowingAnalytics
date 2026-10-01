@@ -246,3 +246,23 @@ class RollingMetric(Base):
     window_days: Mapped[int] = mapped_column(Integer, primary_key=True)
     value: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImportJob(Base):
+    """Progress of the in-app import, kept in the database so any server instance (serverless
+    hosting runs many, and freezes them between requests) can pick up the next step."""
+
+    __tablename__ = "import_job"
+
+    athlete_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("athlete.id", ondelete="CASCADE"), primary_key=True)
+    state: Mapped[str] = mapped_column(Text)  # running | done | error
+    stage: Mapped[str] = mapped_column(Text)  # workouts | strokes | classify | metrics | done
+    done: Mapped[int] = mapped_column(Integer, server_default="0")
+    total: Mapped[int] = mapped_column(Integer, server_default="0")
+    workouts: Mapped[int | None] = mapped_column(Integer)
+    new_workouts: Mapped[int | None] = mapped_column(Integer)
+    errors: Mapped[list] = mapped_column(JSONB, server_default="[]")
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

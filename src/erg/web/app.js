@@ -549,11 +549,12 @@ function renderImport(job) {
 }
 
 async function pollImport() {
-  const job = await api("/athletes/me/import");
+  // Each call does the next batch of work on the server and returns progress.
+  const job = await api("/athletes/me/import/step", { method: "POST" });
   if (job === null) return;
   if (job.state === "running") {
     renderImport(job);
-    importPoll = setTimeout(pollImport, 1000);
+    importPoll = setTimeout(pollImport, 300);
     return;
   }
   importPoll = null;
@@ -616,7 +617,7 @@ async function start() {
   if (job && job.state === "running") {
     $("sync-now").disabled = true;
     renderImport(job);
-    importPoll = setTimeout(pollImport, 1000);
+    importPoll = setTimeout(pollImport, 300);
   } else if (job && (job.state === "error" || me.workouts === 0)) {
     renderImport(job);
   }

@@ -127,7 +127,7 @@ def callback(
         store_token(s, athlete_id, token)
 
     # Import (or catch up) straight away, so a first-time user never lands on an empty page.
-    importer.start(athlete_id)
+    importer.begin(athlete_id)
 
     resp = RedirectResponse("/replay")
     resp.delete_cookie(STATE_COOKIE)
@@ -163,12 +163,20 @@ def get_athlete(athlete_id: int = Depends(current_athlete)):
 @app.post("/athletes/me/import")
 def start_import(athlete_id: int = Depends(current_athlete)):
     """Pull workouts and strokes from Concept2, then classify and compute metrics, in the background."""
-    return importer.start(athlete_id).as_dict()
+    importer.begin(athlete_id)
+    return importer.step(athlete_id, budget_s=10)
+
+
+@app.post("/athletes/me/import/step")
+def import_step(athlete_id: int = Depends(current_athlete)):
+    """Do the next batch of import work (up to ~25s) and return progress. The page calls this
+    repeatedly; nothing runs in the background, so it works on serverless hosting."""
+    return importer.step(athlete_id)
 
 
 @app.get("/athletes/me/import")
 def import_status(athlete_id: int = Depends(current_athlete)):
-    return importer.status(athlete_id).as_dict()
+    return importer.status(athlete_id)
 
 
 @app.post("/athletes/me/backfill")

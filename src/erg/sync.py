@@ -1,4 +1,5 @@
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from collections.abc import Callable
@@ -164,10 +165,13 @@ def fetch_strokes(
     limit: int | None = None,
     retry_errors: bool = True,
     on_progress: Callable[[int, int], None] | None = None,
+    deadline: float | None = None,
 ) -> StrokeFetchStats:
     """Drain the stroke queue for one athlete. Each workout commits independently, so a crash loses at most one.
 
     `on_progress(done, total)` is called after each workout, for progress displays.
+    `deadline` (time.monotonic()) stops claiming new workouts once passed, so a request-bound
+    caller can process a batch and come back for the rest.
     """
     stats = StrokeFetchStats()
     total = pending_stroke_count(session, athlete_id, retry_errors)
@@ -177,11 +181,16 @@ def fetch_strokes(
         on_progress(0, total)
     tried: set[int] = set()  # a failed workout is retried on the next run, not in a tight loop
     while limit is None or len(tried) < limit:
+        # Always make progress: the deadline only stops further claims after the first.
+        if deadline is not None and tried and time.monotonic() >= deadline:
+            break
         if on_progress and tried:
             on_progress(len(tried), max(total, len(tried)))
         workout = _claim_next(session, athlete_id, retry_errors, tried)
         if workout is None:
-            session.rollback()
+            # Nothing was claimed, so nothing is locked. Commit rather than roll back: a caller
+            # sharing this session (the importer's progress row) must not lose its update.
+            session.commit()
             break
         tried.add(workout.id)
         now = datetime.now(timezone.utc)
