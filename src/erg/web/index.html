@@ -112,6 +112,19 @@
 
 <main id="tab-pieces" hidden>
   <section class="panel">
+    <h2>Connect Claude</h2>
+    <p class="hint">Gives Claude read access to your analytics (and a sync tool). Creating a new link
+      replaces the old one, which stops working.</p>
+    <button type="button" id="mcp-create">Create connection link</button>
+    <div id="mcp-details" hidden>
+      <p><b>Claude app or phone</b> (Settings → Connectors → Add custom connector), paste this URL:</p>
+      <input id="mcp-url" class="copy" readonly>
+      <p><b>Claude Code</b>, run:</p>
+      <input id="mcp-cmd" class="copy" readonly>
+      <p class="hint">Keep these private: anyone with the link can read your training data.</p>
+    </div>
+  </section>
+  <section class="panel">
     <h2>How pieces are classified</h2>
     <ol class="rules">
       <li>A solo 2k, 6k or 10k is a <b>test</b>, whatever the pace.</li>

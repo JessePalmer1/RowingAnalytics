@@ -219,3 +219,19 @@ $("pieces").addEventListener("change", (e) => {
 $("pieces").addEventListener("click", (e) => {
   if (e.target.classList.contains("reset")) resetClass(e.target.closest("tr"));
 });
+
+// ---- Connect Claude (MCP) ----------------------------------------------------
+
+$("mcp-create").addEventListener("click", async () => {
+  try {
+    const result = await api("/athletes/me/mcp-token", { method: "POST" });
+    if (result === null) return;
+    $("mcp-url").value = result.connector_url;
+    $("mcp-cmd").value = result.claude_code_command;
+    $("mcp-details").hidden = false;
+    $("mcp-create").textContent = "Create a new link (revokes this one)";
+  } catch (err) {
+    showStatus(err.message, "error");
+  }
+});
+document.querySelectorAll(".copy").forEach((input) => input.addEventListener("focus", () => input.select()));

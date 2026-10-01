@@ -1,10 +1,11 @@
 import secrets
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import date as Date
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
@@ -46,7 +47,16 @@ from erg.sync import backfill, fetch_strokes, upsert_athlete
 from erg.session import clear as clear_session, current_athlete, issue as issue_session
 from erg.tokens import store_token
 
-app = FastAPI(title="Erg Analytics")
+@asynccontextmanager
+async def lifespan(_app):
+    # The MCP SDK's HTTP transport needs its session manager running for the app's lifetime.
+    from erg.mcp_server import start
+
+    async with start().run():
+        yield
+
+
+app = FastAPI(title="Erg Analytics", lifespan=lifespan)
 
 WEB_DIR = Path(__file__).parent / "web"
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
@@ -165,6 +175,30 @@ def start_import(athlete_id: int = Depends(current_athlete)):
     """Pull workouts and strokes from Concept2, then classify and compute metrics, in the background."""
     importer.begin(athlete_id)
     return importer.step(athlete_id, budget_s=10)
+
+
+@app.post("/athletes/me/mcp-token")
+def create_mcp_token(request: Request, athlete_id: int = Depends(current_athlete)):
+    """Mint a personal token for the MCP endpoint (replacing any previous one). Shown once."""
+    from erg.mcp_server import issue_token
+
+    token = issue_token(athlete_id)
+    base = str(request.base_url).rstrip("/")
+    return {
+        "token": token,
+        "connector_url": f"{base}/mcp/?key={token}",
+        "claude_code_command": (
+            f'claude mcp add --transport http erg {base}/mcp/ --header "Authorization: Bearer {token}"'
+        ),
+    }
+
+
+@app.delete("/athletes/me/mcp-token")
+def delete_mcp_token(athlete_id: int = Depends(current_athlete)):
+    from erg.mcp_server import revoke_token
+
+    revoke_token(athlete_id)
+    return {"revoked": True}
 
 
 @app.post("/athletes/me/import/step")
@@ -673,3 +707,9 @@ def summary_week(date: Date | None = None, athlete_id: int = Depends(current_ath
     """Digest payload for one Monday-Sunday week. Descriptive only, no recommendations."""
     with session_scope() as s:
         return week_summary(s, athlete_id, date)
+
+
+# MCP endpoint for Claude, behind per-athlete token auth (see erg.mcp_server).
+from erg.mcp_server import asgi_app as _mcp_asgi_app  # noqa: E402
+
+app.mount("/mcp", _mcp_asgi_app())

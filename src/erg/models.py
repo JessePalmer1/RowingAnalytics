@@ -266,3 +266,13 @@ class ImportJob(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class McpToken(Base):
+    """Personal token for the MCP endpoint. Only the SHA-256 hash is stored."""
+
+    __tablename__ = "mcp_token"
+
+    athlete_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("athlete.id", ondelete="CASCADE"), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

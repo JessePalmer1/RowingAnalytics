@@ -18,6 +18,7 @@ dependencies = [
     # which is why .python-version pins 3.12; uv downloads it automatically.
     "pgserver>=0.1.4; python_version < '3.13'",
     "tzdata>=2024.1",
+    "mcp>=1.12,<2",
 ]
 
 [project.scripts]

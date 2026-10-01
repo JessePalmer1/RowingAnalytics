@@ -38,6 +38,14 @@ The FastAPI app deploys as-is (`app.py` is the entrypoint); it needs a hosted Po
 
 Then open the site, connect Concept2, and the import runs in steps from the page.
 
+## Claude (MCP)
+
+The app serves an MCP endpoint at `/mcp/` with tools for finding pieces, piece detail, comparing
+pieces, metric trends, weekly summaries, training load, and syncing from Concept2. On the
+**Pieces** tab, *Connect Claude* creates a personal link: paste the URL into Claude's custom
+connectors (works on the phone once the app is deployed), or run the `claude mcp add` command it
+shows for Claude Code. A new link revokes the previous one.
+
 ## Setup (persistent database)
 
 
@@ -118,4 +126,5 @@ uv run pytest                        # DB tests skip if Postgres isn't running
 - `src/erg/web/` — UI served at `/replay`: race replay tab and a Pieces tab for classification overrides and settings (vanilla JS + canvas)
 - `src/erg/embedded.py` — local mode: embedded Postgres (pgserver) in a temp folder, deleted on exit
 - `src/erg/importer.py` — in-app import (workouts, strokes, classify, metrics) with progress, started at sign-in
+- `src/erg/mcp_server.py` — MCP tools over streamable HTTP at /mcp, per-athlete token auth
 - `src/erg/api.py`, `src/erg/cli.py` — FastAPI app and `erg` CLI
