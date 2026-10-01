@@ -21,6 +21,23 @@ The first run asks for the two Concept2 values and saves them to `.env`. The bro
 Local mode uses an embedded Postgres in a temporary folder: nothing is kept after the app closes, and
 the next launch imports again. It runs on port 8000, which is the redirect URI registered with Concept2.
 
+## Deploy to Vercel (free tier)
+
+The FastAPI app deploys as-is (`app.py` is the entrypoint); it needs a hosted Postgres.
+
+1. **Database.** In the Vercel project: *Storage → Create → Neon* (free). This sets `DATABASE_URL`.
+2. **Schema.** From this folder, with Neon's URL (use the *direct*, non-pooled one for migrations):
+   ```powershell
+   $env:DATABASE_URL = "postgresql://...neon.tech/...?sslmode=require"; uv run alembic upgrade head
+   ```
+3. **Concept2.** In the developer portal, add the redirect URI `https://<your-app>.vercel.app/auth/callback`.
+4. **Environment variables** (Project → Settings → Environment Variables):
+   `C2_CLIENT_ID`, `C2_CLIENT_SECRET`, `C2_REDIRECT_URI=https://<your-app>.vercel.app/auth/callback`,
+   `TOKEN_ENCRYPTION_KEY` (generate a new one), `SESSION_SECRET` (any long random string), `SECURE_COOKIES=true`.
+5. **Deploy.** Import the GitHub repo in Vercel (it redeploys on every push), or run `npx vercel --prod`.
+
+Then open the site, connect Concept2, and the import runs in steps from the page.
+
 ## Setup (persistent database)
 
 

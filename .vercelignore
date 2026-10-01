@@ -1,0 +1,9 @@
+.venv
+.env
+tests
+scripts
+migrations
+docker-compose.yml
+run.cmd
+run.sh
+*.md

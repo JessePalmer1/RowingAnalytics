@@ -20,7 +20,15 @@ def get_engine():
             _engine = create_engine(embedded.database_url(), pool_pre_ping=True)
             embedded.create_schema(_engine)
         else:
-            _engine = create_engine(settings.database_url, pool_pre_ping=True)
+            # prepare_threshold=None: Neon's pooled endpoint is PgBouncer in transaction mode,
+            # where psycopg's automatic server-side prepared statements fail.
+            _engine = create_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=3,
+                max_overflow=2,
+                connect_args={"prepare_threshold": None},
+            )
         _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 

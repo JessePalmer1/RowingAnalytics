@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,16 @@ def get_settings() -> Settings:
 
 
 def finalize(settings: Settings) -> Settings:
+    # Hosted Postgres (Neon via Vercel) hands out postgres:// or postgresql:// URLs; SQLAlchemy
+    # needs the driver named.
+    for prefix in ("postgres://", "postgresql://"):
+        if settings.database_url.startswith(prefix):
+            settings.database_url = "postgresql+psycopg://" + settings.database_url[len(prefix):]
+    if settings.local_mode and os.environ.get("VERCEL"):
+        raise RuntimeError(
+            "DATABASE_URL is not set on Vercel. Local mode's embedded database cannot run on "
+            "serverless hosting: connect a Postgres (e.g. Neon) and set DATABASE_URL."
+        )
     if settings.local_mode and not settings.token_encryption_key:
         # Local mode's database is thrown away on exit, so a key that only lives as long as
         # the process loses nothing. A persistent database must set one: tokens encrypted with
